@@ -107,7 +107,7 @@ class FaceFeatureDB:
                 print(f"Error! 恢复特征失败(ID: {record_id}): {e}")
                 continue
 
-        if feature:
+        if features:
             return np.vstack(features), info_list
         return None, None
 

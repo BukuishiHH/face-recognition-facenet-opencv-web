@@ -10,7 +10,7 @@ import numpy as np
 
 class FaceDetection:
 
-    def __inti__(self, model_name = 'haarcascade_frontalface_alt2.xml'):
+    def __init__(self, model_name = 'haarcascade_frontalface_alt2.xml'):
         """
         加载 OpenCV 自带的 Haar 预训练模型
         """
