@@ -31,3 +31,6 @@ python-multipart>=0.0.6
 # ---------------------------- 测试与工具 -------------------------------------
 pytest>=7.4
 requests>=2.28
+# 余弦相似度比对(backend/face_recognition.py);
+# 注意: numpy 必须为 1.x —— facenet-pytorch 2.6.0 硬约束 numpy<2.0.0
+scikit-learn>=1.3
