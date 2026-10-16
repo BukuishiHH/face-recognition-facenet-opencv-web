@@ -220,3 +220,23 @@ __marimo__/
 .streamlit/secrets.toml
 
 temp/
+
+# =============================================================================
+# 项目专属忽略规则 (人脸检测识别系统)
+# =============================================================================
+# 人脸特征数据库: 运行时自动生成, 不入库
+*.db
+*.db-journal
+backend/face_features.db
+
+# 人脸样本集: 涉及个人隐私, 内容物一律忽略(含子目录) 仅保留根目录 .gitkeep 占位
+backend/sample_faces/*
+!backend/sample_faces/.gitkeep
+
+# 识别结果输出图: 运行时产物, 不入库
+backend/result_output/*
+!backend/result_output/.gitkeep
+
+# 虚拟环境 (若在项目内创建)
+venv/
+cv_demo/
