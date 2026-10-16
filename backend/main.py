@@ -39,6 +39,7 @@ def read_image(image_path):
 def put_chinese_text(img, text, position, font_size=22, color=(0, 255, 0)):
     """
     在 OpenCV 图像中绘制中文
+    :param color: BGR 颜色元组(与 OpenCV 一致), 内部转换为 RGB 供 PIL 使用
     """
     pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
@@ -47,7 +48,8 @@ def put_chinese_text(img, text, position, font_size=22, color=(0, 255, 0)):
     except Exception as e:
         font = ImageFont.load_default()
         print("Warning! 中文字体加载失败, 可能显示乱码")
-    draw.text(position, text, font=font, fill=color)
+    rgb_color = (color[2], color[1], color[0])   # BGR -> RGB: PIL 按 RGB 解释颜色
+    draw.text(position, text, font=font, fill=rgb_color)
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 def draw_results(image, faces, results):
@@ -235,7 +237,7 @@ def delete_face():
         face_db.delete_by_name(face_id)
 
 
-# --------------------------------------- 业务功能 ---------------------------------------
+# --------------------------------------- 主入口 ---------------------------------------
 if __name__ == '__main__':
     while True:
         print("#" * 20 + " 人脸检测识别系统" + "#" * 20)
