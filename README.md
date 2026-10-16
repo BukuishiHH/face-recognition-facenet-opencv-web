@@ -62,6 +62,8 @@ face-recognition-facenet-opencv-web/
 │   ├── face_detection.py       # Haar 人脸检测模块
 │   ├── face_recognition.py     # FaceNet 特征提取与比对模块
 │   ├── db_utils.py             # SQLite 特征数据库模块
+│   ├── tests/                  # pytest 单元测试（54 项）
+│   ├── pytest.ini              # pytest 配置
 │   └── face_features.db        # 特征库（首次运行自动生成）
 ├── frontend/                   # Vue3 前端项目
 ├── docs/                       # 项目文档
@@ -119,6 +121,19 @@ cd frontend
 npm install
 npm run dev
 ```
+
+### 4. 运行自动化测试
+
+```bash
+cd backend
+python -m pytest -v
+```
+
+覆盖范围：人脸检测（`test_face_detection.py`）、SQLite 特征库（`test_db_utils.py`）、FaceNet 特征提取与比对（`test_face_recognition.py`）、CLI 业务流程（`test_main.py`）。
+
+- 测试样例位于 `backend/sample_faces/_test_samples/`（`one_face.jpg` / `no_face.jpg`，缺失时相关用例自动 `skip`）；
+- 特征库测试使用 `tmp_path` 临时库，**不会污染** `face_features.db`；
+- 摄像头相关的两个功能依赖物理设备，不纳入自动化测试，需人工验证。
 
 ---
 
