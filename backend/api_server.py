@@ -12,11 +12,15 @@ FastAPI 接口层入口
   - 不出现 input() / cv2.imshow() 等控制台交互.
 """
 
+import base64
+import binascii
 import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
+import cv2
+import numpy as np
 import torch
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -143,6 +147,41 @@ def fail(code: int, message: str, status_code: int = 200) -> JSONResponse:
     """失败信封: 直接返回 JSONResponse, 绕过 response_model"""
     return JSONResponse(status_code=status_code,
                         content={'code': code, 'message': message, 'data': None})
+
+
+# --------------------------------------- 图片解码与缩放工具 ---------------------------------------
+def decode_base64_image(raw: str):
+    """base64 / dataURL -> BGR ndarray; 失败返回 None"""
+    if not raw:
+        return None
+    if ',' in raw and raw.strip().startswith('data:'):
+        raw = raw.split(',', 1)[1]                  # 剥离 'data:image/jpeg;base64,' 前缀
+    raw = ''.join(raw.split())                      # 去除换行/空格
+    try:
+        binary = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not binary:
+        return None
+    return cv2.imdecode(np.frombuffer(binary, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+
+def decode_upload_image(raw: bytes):
+    """上传文件字节 -> BGR ndarray; 失败返回 None"""
+    if not raw:
+        return None
+    return cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+
+def limit_max_side(image, max_side: int = MAX_FRAME_SIDE):
+    """长边超过 max_side 时等比缩小, 返回 (缩放后图像, 缩放系数 scale)"""
+    h, w = image.shape[:2]
+    long_side = max(h, w)
+    if long_side <= max_side:
+        return image, 1.0
+    scale = max_side / long_side
+    resized = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    return resized, scale
 
 
 # --------------------------------------- 生命周期 ---------------------------------------
