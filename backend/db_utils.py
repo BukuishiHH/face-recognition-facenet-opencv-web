@@ -97,6 +97,27 @@ class FaceFeatureDB:
                 return None
 
 
+    # --------------------------------------- 查询同名记录 ---------------------------------------
+    def exists_name(self, face_id):
+        """
+        只读查询: 指定姓名是否已存在特征记录
+
+        与 save_feature 内部的同名查重语义保持一致, 供接口层在入库前预检,
+        从而把「同名已存在(1004)」与「特征/写库失败(1003)」区分开.
+        :param face_id: 身份标签(姓名)
+        :return: 存在返回 True, 否则 False
+        """
+        with _DB_LOCK:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                'SELECT 1 FROM face_features WHERE face_id = ? LIMIT 1',
+                (face_id,),
+            )
+            found = cursor.fetchone() is not None
+            cursor.close()
+            return found
+
+
     # --------------------------------------- 获取特征库所有特征 ---------------------------------------
     def get_all_features(self):
         """

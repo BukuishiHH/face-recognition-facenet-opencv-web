@@ -92,6 +92,44 @@ class TestSaveAndGet:
         assert db.get_all_features() == (None, None)
 
 
+# --------------------------------------- 同名查询 ---------------------------------------
+class TestExistsName:
+
+    def test_existing_name_returns_true(self, db):
+        db.save_feature(make_feature(), '张三')
+        assert db.exists_name('张三') is True
+
+    def test_missing_name_returns_false(self, db):
+        db.save_feature(make_feature(), '张三')
+        assert db.exists_name('李四') is False
+
+    def test_empty_db_returns_false(self, db):
+        assert db.exists_name('张三') is False
+
+    def test_exact_match_not_prefix(self, db):
+        """只做精确匹配, 不能把「张三丰」误判为「张三」已存在"""
+        db.save_feature(make_feature(), '张三丰')
+        assert db.exists_name('张三') is False
+
+    def test_query_is_read_only(self, db):
+        """预检不得改变记录数与内容"""
+        db.save_feature(make_feature(), '张三')
+        before_matrix, before_info = db.get_all_features()
+
+        assert db.exists_name('张三') is True
+
+        after_matrix, after_info = db.get_all_features()
+        assert after_matrix.shape == before_matrix.shape
+        assert np.array_equal(after_matrix, before_matrix)
+        assert after_info == before_info
+
+    def test_after_delete_returns_false(self, db):
+        db.save_feature(make_feature(), '待删除')
+        assert db.exists_name('待删除') is True
+        db.delete_by_name('待删除')
+        assert db.exists_name('待删除') is False
+
+
 # --------------------------------------- 删除 ---------------------------------------
 class TestDelete:
 
