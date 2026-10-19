@@ -160,8 +160,8 @@ def fail(code: int, message: str, status_code: int = 200) -> JSONResponse:
 
 
 # --------------------------------------- 图片解码与缩放工具 ---------------------------------------
-def decode_base64_image(raw: str):
-    """base64 / dataURL -> BGR ndarray; 失败返回 None"""
+def decode_base64_image(raw: str, max_bytes: int | None = None):
+    """base64 / dataURL -> BGR ndarray; 失败或超过 max_bytes 返回 None"""
     if not raw:
         return None
     if ',' in raw and raw.strip().startswith('data:'):
@@ -172,6 +172,8 @@ def decode_base64_image(raw: str):
     except (binascii.Error, ValueError):
         return None
     if not binary:
+        return None
+    if max_bytes is not None and len(binary) > max_bytes:
         return None
     return cv2.imdecode(np.frombuffer(binary, dtype=np.uint8), cv2.IMREAD_COLOR)
 
@@ -189,6 +191,19 @@ def _validate_name(name: str) -> str | None:
     if not normalized or len(normalized) > MAX_NAME_LEN:
         return None
     return normalized
+
+
+def _validate_upload(file: UploadFile) -> tuple[bytes | None, str]:
+    """
+    同步读取并校验上传文件
+    :return: (原始字节, '') / (None, 'empty') / (None, 'oversize')
+    """
+    raw = file.file.read()
+    if not raw:
+        return None, 'empty'
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return None, 'oversize'
+    return raw, ''
 
 
 def limit_max_side(image, max_side: int = MAX_FRAME_SIDE):
@@ -343,6 +358,20 @@ def _build_openapi():
         for name, definition in model_schema.pop('$defs', {}).items():
             components.setdefault(name, definition)
         components.setdefault(model.__name__, model_schema)
+
+    # FastAPI 会把空 Form 字符串视为缺失, 因此路由用 Form('') 接收后再区分空值;
+    # 这里把 name 补回 required 并去掉 default, 保持 OpenAPI 契约与 docs/03-02 一致.
+    try:
+        body_schema = schema['paths']['/api/face/register/image']['post'][
+            'requestBody'
+        ]['content']['multipart/form-data']['schema']
+        form_name = body_schema['$ref'].rsplit('/', 1)[-1]
+        form_schema = components[form_name]
+        form_schema['required'] = ['file', 'name']
+        form_schema['properties']['name'].pop('default', None)
+    except (KeyError, TypeError):
+        logger.warning('OpenAPI: 未能补全 register/image 的 name 必填标记')
+
     app.openapi_schema = schema
     return schema
 
@@ -393,15 +422,25 @@ def health():
 
 # --------------------------------------- 人脸采集接口 ---------------------------------------
 @app.post('/api/face/register/image', response_model=ApiResponse[RegisterData], tags=['face'])
-def register_by_image(file: UploadFile = File(...), name: str = Form(...)):
+def register_by_image(
+    request: Request,
+    file: UploadFile = File(...),
+    name: str = Form(''),
+):
     """图片入库: multipart 上传图片 + 姓名 → 检测 → 特征 → 入库"""
+    # FastAPI 将空 Form 字符串视为缺失, 因此 name 用默认值接收;
+    # 再根据原始表单是否包含 name 区分「字段缺失(422)」与「空姓名(1001)」。
+    form = getattr(request, '_form', None)
+    if form is None or 'name' not in form:
+        return fail(422, '参数校验失败: name Field required', status_code=422)
+
     normalized = _validate_name(name)
     if normalized is None:
         return fail(1001, ERR_NAME)
 
-    raw = file.file.read()                      # 同步路由: 直接读底层文件对象
-    if not raw:
-        logger.warning('图片上传为空: name=%s', normalized)
+    raw, reject_reason = _validate_upload(file)
+    if raw is None:
+        logger.warning('图片上传被拒: name=%s, 原因=%s', normalized, reject_reason)
         return fail(1001, ERR_FILE)
     logger.info('图片入库请求: name=%s, 上传=%d B', normalized, len(raw))
 
@@ -427,7 +466,7 @@ def register_by_frame(payload: FrameRegisterRequest):
         return fail(1001, ERR_BASE64)
     logger.info('帧入库请求: name=%s, base64=%d 字符', normalized, len(payload.image_base64))
 
-    image = decode_base64_image(payload.image_base64)
+    image = decode_base64_image(payload.image_base64, max_bytes=MAX_UPLOAD_BYTES)
     if image is None:
         logger.warning('帧解码失败: name=%s, base64=%d 字符', normalized, len(payload.image_base64))
         return fail(1001, ERR_BASE64)
