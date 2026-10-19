@@ -108,6 +108,7 @@ logger = logging.getLogger("api_server")
 | `MAX_FRAME_SIDE` | `1280` | 推理前长边缩放上限（大图降采样，坐标按比例还原） |
 | `MAX_NAME_LEN` | `32` | 姓名长度上限（去空格后校验） |
 | `RESULT_DIR` | `backend/result_output/` | 标注结果图落盘目录 |
+| `DETECTOR_MODEL` | `haarcascade_frontalface_alt2.xml` | 检测器文件名，生命周期与健康检查共用 |
 | `VERSION` | `1.0.0` | 写入 `/api/health` 与 OpenAPI `version` |
 
 ### 4.3 生命周期（lifespan）
@@ -382,6 +383,8 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 
 推理侧：`torch` 模型可被多线程只读调用，但**实时帧接口必须串行**（同一时刻只允许 1 帧在算），否则 GPU 显存/CPU 线程争抢会让每一帧都变慢，见 `docs/03-03` 的 `threading.Lock` 丢帧策略。
 
+> **实施顺序**：M3-1.3 生命周期需要在非创建线程内执行 `close()`，因此先放开 `check_same_thread=False`；M3-1.7 再补齐模块级 `RLock` 与 20 并发验证。
+
 部署约定：`uvicorn api_server:app --host 0.0.0.0 --port 8000`，**单 worker**（`--workers 1`）。多 worker 会让每个进程各加载一份 FaceNet（显存 × N）并各自持有 SQLite 连接，与单机演示定位不符。
 
 ---
@@ -392,7 +395,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 |--------|--------|----------|------|
 | M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ✅ 已完成（2026-10-19，`TestClient` 访问 `/docs`、`/openapi.json` 均 200） |
 | M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个模型） |
-| M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ⬜ 待开始 |
+| M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ✅ 已完成（2026-10-19，`FACENET_WARMUP=0` 启动/关闭正常，检测器与库记录数日志输出） |
 | M3-1.4 | CORS 配置 | 带 `Origin: http://localhost:5173` 的 `OPTIONS` 预检返回 200 且带 `access-control-allow-origin` | ⬜ 待开始 |
 | M3-1.5 | 统一响应与异常处理 | 业务错误返回 `code != 0`；`422` 与未捕获异常均返回统一信封 | ⬜ 待开始 |
 | M3-1.6 | 解码 / 缩放工具 | `base64`、`dataURL`、上传字节三路均可解码；缩放后坐标可按 `scale` 还原 | ⬜ 待开始 |

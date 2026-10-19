@@ -16,7 +16,9 @@ class FaceFeatureDB:
         if db_path is None:
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'face_features.db')
         self.db_path = db_path
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # check_same_thread=False: FastAPI 同步路由在线程池执行, 需允许跨线程复用连接;
+        # 并发写保护由模块级 _DB_LOCK 提供(见 M3-1.7).
         self._create_table()
 
 

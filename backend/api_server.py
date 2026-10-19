@@ -14,11 +14,16 @@ FastAPI 接口层入口
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
+
+import db_utils
+from face_detection import FaceDetection
+from face_recognition import FaceRecognition
 
 # --------------------------------------- 日志 ---------------------------------------
 logger = logging.getLogger('api_server')
@@ -41,6 +46,7 @@ MAX_FRAME_SIDE = 1280                   # 推理前长边缩放上限
 MAX_NAME_LEN = 32                       # 姓名长度上限
 RESULT_DIR = os.path.join(BASE_DIR, 'result_output')
 STATIC_PREFIX = '/static'               # 标注结果图静态资源前缀
+DETECTOR_MODEL = 'haarcascade_frontalface_alt2.xml'
 VERSION = '1.0.0'
 
 # --------------------------------------- 公共数据模型 ---------------------------------------
@@ -123,11 +129,41 @@ class HealthData(BaseModel):
     library_size: int
 
 
+# --------------------------------------- 生命周期 ---------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时初始化检测器 / 预热 FaceNet / 记录特征库规模, 关闭时释放数据库"""
+    os.makedirs(RESULT_DIR, exist_ok=True)
+
+    app.state.detector = FaceDetection(model_name=DETECTOR_MODEL)
+    logger.info('检测器就绪: %s', DETECTOR_MODEL)
+
+    if os.getenv('FACENET_WARMUP', '1') == '1':
+        logger.info('FaceNet 预热中(首次运行需下载 casia-webface 权重)...')
+        FaceRecognition._get_model()
+        logger.info('FaceNet 设备: %s', FaceRecognition._device)
+    else:
+        logger.info('FACENET_WARMUP=0, FaceNet 将在首个识别请求时懒加载')
+
+    try:
+        _, info_list = db_utils.face_db.get_all_features()
+        logger.info('特征库记录数: %s', 0 if info_list is None else len(info_list))
+    except Exception as exc:                              # 记录数读取失败不应阻断服务启动
+        logger.warning('读取特征库记录数失败: %s', exc)
+
+    try:
+        yield
+    finally:
+        db_utils.face_db.close()
+        logger.info('数据库连接已关闭')
+
+
 # --------------------------------------- 应用实例 ---------------------------------------
 app = FastAPI(
     title='人脸检测识别系统 API',
     description='基于 FaceNet + OpenCV 的人脸检测、特征录入、识别与特征库管理接口',
     version=VERSION,
+    lifespan=lifespan,
 )
 
 # --------------------------------------- OpenAPI 扩展 ---------------------------------------
