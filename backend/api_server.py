@@ -16,6 +16,7 @@ import base64
 import binascii
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
@@ -57,6 +58,14 @@ RESULT_DIR = os.path.join(BASE_DIR, 'result_output')
 STATIC_PREFIX = '/static'               # 标注结果图静态资源前缀
 DETECTOR_MODEL = 'haarcascade_frontalface_alt2.xml'
 VERSION = '1.0.0'
+
+# 业务错误提示(docs/03-02 4.2); 统一在此定义, 避免路由与共用服务文案漂移
+ERR_NAME = '姓名不能为空且长度需在 1~32 之间'
+ERR_FILE = '图片为空或超过 5MB'
+ERR_IMAGE = '图片损坏或格式不支持'
+ERR_BASE64 = '图片为空、base64 非法或格式不支持'
+ERR_NO_FACE = '未检测到人脸，请更换图片或正对摄像头'
+ERR_FEATURE = '人脸特征提取失败，请重试'
 
 # --------------------------------------- 公共数据模型 ---------------------------------------
 T = TypeVar('T')
@@ -183,6 +192,62 @@ def limit_max_side(image, max_side: int = MAX_FRAME_SIDE):
     scale = max_side / long_side
     resized = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     return resized, scale
+
+
+# --------------------------------------- 人脸录入共用服务 ---------------------------------------
+def _register_from_bgr(image, name):
+    """
+    检测 → 取脸 → ROI → 特征 → 同名预检 → 入库
+
+    与协议无关: 图片上传和摄像头帧都调用本函数, 由路由负责解码与参数校验.
+    :param image: BGR ndarray
+    :param name: 已通过姓名校验的姓名
+    :return: (code, message, RegisterData | None)
+    """
+    detector = app.state.detector
+
+    detect_started = time.perf_counter()
+    faces = detector.detect_faces(image)
+    detect_ms = (time.perf_counter() - detect_started) * 1000
+    logger.info('人脸检测: name=%s, 数量=%d, 耗时=%.1fms', name, len(faces), detect_ms)
+
+    if not faces:
+        return 1002, ERR_NO_FACE, None
+
+    # M3-2.1 先取检测顺序第一张; M3-2.5 再升级为「多脸取面积最大」
+    x, y, w, h = faces[0]
+    roi = image[y:y + h, x:x + w]
+
+    feature_started = time.perf_counter()
+    feature = FaceRecognition.extract_feature(roi)
+    feature_ms = (time.perf_counter() - feature_started) * 1000
+    if feature is None:
+        logger.warning('特征提取失败: name=%s, ROI=%s, 耗时=%.1fms', name, (x, y, w, h), feature_ms)
+        return 1003, ERR_FEATURE, None
+    logger.info(
+        '特征提取: name=%s, 维度=%d, 耗时=%.1fms',
+        name, feature.shape[1], feature_ms,
+    )
+
+    # 入库前预检: 将「同名」与「特征/写库失败」区分开; save_feature 内部仍保留查重
+    if db_utils.face_db.exists_name(name):
+        logger.info('同名记录已存在, 拒绝重复录入: name=%s', name)
+        return 1004, f'姓名[{name}]已存在，请先删除旧记录再录入', None
+
+    record_id = db_utils.face_db.save_feature(feature, name)
+    if record_id is None:
+        logger.error('特征入库失败: name=%s', name)
+        return 1003, ERR_FEATURE, None
+
+    logger.info('特征入库成功: name=%s, record_id=%d', name, record_id)
+    data = RegisterData(
+        record_id=record_id,
+        name=name,
+        face_count=len(faces),
+        selected=FaceBox(x=x, y=y, w=w, h=h),
+        feature_dim=feature.shape[1],
+    )
+    return 0, '人脸录入成功', data
 
 
 # --------------------------------------- 生命周期 ---------------------------------------
