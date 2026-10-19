@@ -391,7 +391,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 | 里程碑 | 交付物 | 判定标准 | 状态 |
 |--------|--------|----------|------|
 | M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ✅ 已完成（2026-10-19，`TestClient` 访问 `/docs`、`/openapi.json` 均 200） |
-| M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ⬜ 待开始 |
+| M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个模型） |
 | M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ⬜ 待开始 |
 | M3-1.4 | CORS 配置 | 带 `Origin: http://localhost:5173` 的 `OPTIONS` 预检返回 200 且带 `access-control-allow-origin` | ⬜ 待开始 |
 | M3-1.5 | 统一响应与异常处理 | 业务错误返回 `code != 0`；`422` 与未捕获异常均返回统一信封 | ⬜ 待开始 |
