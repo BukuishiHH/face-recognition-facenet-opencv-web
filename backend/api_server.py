@@ -23,7 +23,7 @@ from typing import Generic, TypeVar
 import cv2
 import numpy as np
 import torch
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -181,6 +181,14 @@ def decode_upload_image(raw: bytes):
     if not raw:
         return None
     return cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+
+
+def _validate_name(name: str) -> str | None:
+    """去除首尾空白后校验长度 1~32; 非法返回 None"""
+    normalized = (name or '').strip()
+    if not normalized or len(normalized) > MAX_NAME_LEN:
+        return None
+    return normalized
 
 
 def limit_max_side(image, max_side: int = MAX_FRAME_SIDE):
@@ -381,4 +389,29 @@ def health():
         feature_dim=FEATURE_DIM,
         library_size=0 if info_list is None else len(info_list),
     ))
+
+
+# --------------------------------------- 人脸采集接口 ---------------------------------------
+@app.post('/api/face/register/image', response_model=ApiResponse[RegisterData], tags=['face'])
+def register_by_image(file: UploadFile = File(...), name: str = Form(...)):
+    """图片入库: multipart 上传图片 + 姓名 → 检测 → 特征 → 入库"""
+    normalized = _validate_name(name)
+    if normalized is None:
+        return fail(1001, ERR_NAME)
+
+    raw = file.file.read()                      # 同步路由: 直接读底层文件对象
+    if not raw:
+        logger.warning('图片上传为空: name=%s', normalized)
+        return fail(1001, ERR_FILE)
+    logger.info('图片入库请求: name=%s, 上传=%d B', normalized, len(raw))
+
+    image = decode_upload_image(raw)
+    if image is None:
+        logger.warning('图片解码失败: name=%s, 上传=%d B', normalized, len(raw))
+        return fail(1001, ERR_IMAGE)
+    logger.info('图片解码完成: name=%s, 尺寸=%dx%d', normalized, image.shape[1], image.shape[0])
+
+    code, message, data = _register_from_bgr(image, normalized)
+    return fail(code, message) if code else ok(data, message)
+
 
