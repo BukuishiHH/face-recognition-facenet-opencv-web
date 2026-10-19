@@ -27,6 +27,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import db_utils
@@ -239,6 +240,11 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
+# --------------------------------------- 静态资源 ---------------------------------------
+# result_output/ 与识别结果的落盘目录保持一致; 目录不存在时先创建, 避免 StaticFiles 初始化失败
+os.makedirs(RESULT_DIR, exist_ok=True)
+app.mount(STATIC_PREFIX, StaticFiles(directory=RESULT_DIR), name='static')
 
 # --------------------------------------- OpenAPI 扩展 ---------------------------------------
 _OPENAPI_MODELS = (
