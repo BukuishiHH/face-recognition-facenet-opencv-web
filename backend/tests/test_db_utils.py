@@ -140,3 +140,52 @@ class TestDelete:
 
     def test_delete_missing_name_returns_zero(self, db):
         assert db.delete_by_name('不存在的人') == 0
+
+
+# --------------------------------------- 列表元信息 ---------------------------------------
+class TestListRecords:
+
+    def test_empty_db_returns_empty_list(self, db):
+        assert db.list_records() == []
+
+    def test_returns_metadata_in_id_order(self, db):
+        for seed, name in enumerate(['张三', '李四', '王五']):
+            db.save_feature(make_feature(seed), name)
+
+        records = db.list_records()
+        assert [item['id'] for item in records] == sorted(item['id'] for item in records)
+        assert [item['name'] for item in records] == ['张三', '李四', '王五']
+        assert all(set(item) == {'id', 'name', 'timestamp', 'feature_dim'} for item in records)
+        assert all(item['feature_dim'] == FEATURE_DIM for item in records)
+
+    def test_timestamp_format(self, db):
+        db.save_feature(make_feature(), '时间测试')
+        timestamp = db.list_records()[0]['timestamp']
+        assert len(timestamp) == 19
+        assert timestamp[4] == '-' and timestamp[7] == '-' and timestamp[10] == ' '
+        assert timestamp[13] == ':' and timestamp[16] == ':'
+
+    def test_null_name_becomes_empty_string(self, db):
+        cursor = db.conn.cursor()
+        cursor.execute(
+            'INSERT INTO face_features (feature, timestamp, face_id, feature_dim) '
+            'VALUES (?, ?, ?, ?)',
+            (make_feature().tobytes(), '2026-10-19 10:00:00', None, FEATURE_DIM),
+        )
+        db.conn.commit()
+        cursor.close()
+
+        records = db.list_records()
+        assert len(records) == 1
+        assert records[0]['name'] == ''
+
+    def test_is_read_only(self, db):
+        db.save_feature(make_feature(seed=5), '只读测试')
+        before = db.get_all_features()
+        first = db.list_records()
+        second = db.list_records()
+        after = db.get_all_features()
+
+        assert first == second
+        assert after[0].shape == before[0].shape
+        assert np.array_equal(after[0], before[0])

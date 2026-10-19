@@ -118,6 +118,32 @@ class FaceFeatureDB:
             return found
 
 
+    # --------------------------------------- 获取特征库元信息 ---------------------------------------
+    def list_records(self):
+        """
+        获取特征库元信息(不读取 feature BLOB), 按录入顺序返回
+
+        与 get_all_features() 分开: 管理列表只需要元信息, 避免为展示而
+        全量读取并反序列化 2048 B/条的特征本体.
+        :return: [{'id': int, 'name': str, 'timestamp': str, 'feature_dim': int}, ...]
+        """
+        with _DB_LOCK:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute('''
+                SELECT id, face_id, timestamp, feature_dim
+                FROM face_features
+                ORDER BY id ASC
+                ''')
+                return [{'id': record_id,
+                         'name': name or '',
+                         'timestamp': timestamp,
+                         'feature_dim': dim}
+                        for record_id, name, timestamp, dim in cursor.fetchall()]
+            finally:
+                cursor.close()
+
+
     # --------------------------------------- 获取特征库所有特征 ---------------------------------------
     def get_all_features(self):
         """

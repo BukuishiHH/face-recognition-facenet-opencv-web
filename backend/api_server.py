@@ -24,7 +24,7 @@ from typing import Generic, TypeVar
 import cv2
 import numpy as np
 import torch
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -202,10 +202,15 @@ def decode_upload_image(raw: bytes):
     return cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 
+def _normalize_name(name: str) -> str | None:
+    """去除首尾空白; 空串/纯空白返回 None"""
+    return (name or '').strip() or None
+
+
 def _validate_name(name: str) -> str | None:
     """去除首尾空白后校验长度 1~32; 非法返回 None"""
-    normalized = (name or '').strip()
-    if not normalized or len(normalized) > MAX_NAME_LEN:
+    normalized = _normalize_name(name)
+    if normalized is None or len(normalized) > MAX_NAME_LEN:
         return None
     return normalized
 
@@ -581,6 +586,53 @@ def health():
         feature_dim=FEATURE_DIM,
         library_size=0 if info_list is None else len(info_list),
     ))
+
+
+# --------------------------------------- 特征库管理接口 ---------------------------------------
+@app.get('/api/face/library', response_model=ApiResponse[LibraryData], tags=['library'])
+def get_library():
+    """特征库列表: 只返回元信息, 不读取 feature BLOB"""
+    try:
+        records = db_utils.face_db.list_records()
+    except Exception as exc:
+        logger.exception('读取特征库失败: %s', exc)
+        return fail(1007, '读取特征库失败，请查看服务端日志')
+
+    return ok(
+        LibraryData(total=len(records), items=records),
+        message=f'共 {len(records)} 条特征记录',
+    )
+
+
+@app.delete('/api/face/library', response_model=ApiResponse[DeleteData], tags=['library'])
+def delete_library_item(name: str = Query(..., description='要删除的姓名')):
+    """按姓名删除特征; 同名记录一次全部删除, 返回实际行数"""
+    normalized = _normalize_name(name)
+    if normalized is None:
+        logger.warning('删除特征被拒: name=%r, 原因=空或纯空白', name)
+        return fail(1001, '姓名不能为空或纯空格')
+
+    started = time.perf_counter()
+    try:
+        deleted = db_utils.face_db.delete_by_name(normalized)
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.exception('删除特征失败: name=%s, 耗时=%.1fms, 错误=%s',
+                         normalized, elapsed_ms, exc)
+        return fail(1007, '删除失败，请查看服务端日志')
+
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if deleted == 0:
+        logger.info('删除特征未命中: name=%s, deleted=0, 耗时=%.1fms',
+                    normalized, elapsed_ms)
+        return fail(1005, f'特征库中不存在姓名: {normalized}')
+
+    logger.info('删除特征成功: name=%s, deleted=%d, 耗时=%.1fms',
+                normalized, deleted, elapsed_ms)
+    return ok(
+        DeleteData(name=normalized, deleted=deleted),
+        message=f'已删除 {deleted} 条「{normalized}」特征',
+    )
 
 
 # --------------------------------------- 人脸采集接口 ---------------------------------------
