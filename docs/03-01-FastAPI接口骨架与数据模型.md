@@ -60,7 +60,7 @@
 - 不做人脸检测算法（→ `face_detection.py`）；
 - 不做特征提取与余弦比对（→ `face_recognition.py`）；
 - 不做 Blob 存取（→ `db_utils.py`）；
-- 不做画框、保存图片的中文渲染（→ 复用 `main.py` 的 `draw_results` / `save_result`）；
+- 不做画框、保存图片的中文渲染（→ 画框复用 `main.py` 的 `draw_results`；文件保存由接口层 `_write_result()` 自行编码，不调用 `main.save_result()`）；
 - 不做前端页面与 canvas 叠加绘制（→ 阶段 4）。
 
 ## 四、功能逻辑
@@ -78,15 +78,16 @@ from contextlib import asynccontextmanager
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from typing import Generic, TypeVar
 
 import db_utils
+import main
 from db_utils import FaceFeatureDB
 from face_detection import FaceDetection
 from face_recognition import FaceRecognition
@@ -142,7 +143,8 @@ async def lifespan(app: FastAPI):
     db_utils.face_db.close()
 ```
 
-> **模型不在 import 时加载**：`main.py` 是「导入即加载 Haar + 连接数据库」，这对 CLI 单例是合理的；但接口层若沿用该写法，会导致 pytest 收集用例时就下载 FaceNet 权重、`uvicorn --reload` 每次重载重复占用显存。故接口层改为**生命周期内加载**。
+> **模型加载边界**：FaceNet 不在 import 时加载，而是由 `lifespan` 预热（或 `FACENET_WARMUP=0` 时首个请求懒加载），避免 pytest 收集/`--reload` 时占用显存。
+> 但需注意：`api_server` 为复用中文绘制而 `import main`，`main.py` 本身会在导入时创建 `face_detector = FaceDetection()` 并连接 `face_db`。因此 **Haar 与 SQLite 单例存在导入期副作用，FaceNet 没有**；接口推理使用 `app.state.detector`，`main.face_detector` 仅作为导入副作用存在（小对象，不参与接口推理）。
 
 ### 4.4 CORS 配置
 
@@ -187,8 +189,12 @@ class FaceBox(BaseModel):
 class FaceResult(BaseModel):
     box: FaceBox                      # 原图坐标系下的人脸框
     name: str | None = None           # 匹配到的人名，未匹配为 null
-    similarity: float = 0.0           # 最高余弦相似度（0~1）
+    similarity: float = 0.0           # 最高余弦相似度（内存保留原始精度）
     matched: bool = False             # 是否达到阈值
+
+    @field_serializer('similarity')
+    def _serialize_similarity(self, value: float) -> float:
+        return round(float(value), 4)  # HTTP 输出 4 位小数，内存值不取整
 
 
 class RegisterData(BaseModel):
@@ -251,12 +257,12 @@ class HealthData(BaseModel):
 1. `FaceBox` 单独抽层，前端 canvas 叠加时直接读 `box.x / box.y / box.w / box.h`，无需记 `[x, y, w, h]` 下标；
 2. `FaceResult.matched` 与 `name` 冗余存在——`name` 供展示，`matched` 供前端统计与样式分支（绿框/红框），避免前端再比较阈值；
 3. `RecognizeData.elapsed_ms` 由服务端计时，便于阶段 5 性能验收与前端「耗时」展示；
-4. 所有模型字段均可 JSON 序列化（`int` / `float` / `str` / `bool` / `null`），**不返回 ndarray**。
+4. 所有模型字段均可 JSON 序列化（`int` / `float` / `str` / `bool` / `null`），**不返回 ndarray**；`FaceResult.similarity` 通过 `field_serializer` 在 HTTP 输出时保留 4 位小数，内存对象保留原始精度，便于与 CLI 做 `<1e-6` 比对。
 5. **校验分层**：Pydantic 只做结构校验（缺字段、类型错误 → `422`）；长度、取值范围、空串等**业务校验一律在路由内完成**（→ `1001`）。因此 `FrameRegisterRequest.name` / `image_base64` 与 `FrameRecognizeRequest.threshold` 不加 `min_length` / `ge` / `le`，否则同一类错误在图片接口返回 `1001`、帧接口返回 `422`，前端需写两套分支。
 
 ### 4.6 统一响应与错误码
 
-**约定**：全部业务接口一律返回 HTTP 200 + `{code, message, data}`；前端只按 `code` 分支，HTTP 层异常仅保留「并发保护 429」与「框架校验 422」两种。
+**约定**：业务接口默认返回 HTTP 200 + `{code, message, data}`；前端主要按 `code` 分支。HTTP 非 200 仅保留三种：框架校验 `422`、实时帧忙 `429`、未捕获异常 `500`（图片排队超时仍为 200 + `1008`）。
 
 | code | HTTP | 含义 | 触发场景 | 建议前端处理 |
 |------|------|------|----------|--------------|
@@ -264,10 +270,10 @@ class HealthData(BaseModel):
 | `1001` | 200 | 请求参数非法 | 姓名为空/超长、文件为空、base64 无法解码、图片损坏、阈值越界、文件超过 5 MB | 红字提示 `message` |
 | `1002` | 200 | 未检测到人脸 | 图片/帧中无人脸 | 提示「请正对摄像头或更换图片」 |
 | `1003` | 200 | 特征提取失败 | ROI 裁剪为空、模型前向异常 | 提示重试并记录日志 |
-| `1004` | 200 | 同名特征已存在 | `save_feature` 查重命中 | 提示「先删除旧记录再录入」 |
+| `1004` | 200 | 同名特征已存在 | `exists_name()` 预检命中（`save_feature` 内部查重兜底） | 提示「先删除旧记录再录入」 |
 | `1005` | 200 | 记录不存在 | 删除返回 0 行 | 提示并刷新列表 |
-| `1007` | 500 | 服务内部错误 | 未捕获异常（兜底处理器） | 提示「服务异常」 |
-| `1008` | 429 | 推理服务繁忙 | 实时帧接口并发超过 1 帧在算 | 前端丢帧，不提示用户 |
+| `1007` | 200 / 500 | 服务内部错误 | 路由内捕获的 DB/IO 异常用 `fail(1007)`（HTTP 200）；未捕获异常由全局兜底处理器返回 500 + `1007` | 提示「服务异常」 |
+| `1008` | 200 / 429 | 推理服务繁忙 | 图片识别排队超时 → HTTP 200 + `1008`；实时帧抢锁失败 → HTTP 429 + `1008` | 图片提示稍后重试；帧直接丢弃，不提示 |
 | `422` | 422 | 请求体校验失败 | Pydantic 解析失败（字段缺失/类型错误） | 提示 `message` 首条错误 |
 
 ```python
@@ -295,18 +301,22 @@ async def validation_handler(request, exc):
 ### 4.7 图片解码与缩放工具
 
 ```python
-def decode_base64_image(raw: str):
-    """base64 / dataURL → BGR ndarray；失败返回 None"""
+def decode_base64_image(raw: str, max_bytes: int | None = None):
+    """base64 / dataURL → BGR ndarray；失败或超过 max_bytes 返回 None"""
     if not raw:
         return None
     if ',' in raw and raw.strip().startswith('data:'):
         raw = raw.split(',', 1)[1]                  # 剥离 'data:image/jpeg;base64,' 前缀
     raw = ''.join(raw.split())                      # 去除换行/空格
+    if max_bytes is not None and len(raw) > 4 * ((max_bytes + 2) // 3):
+        return None                                 # 编码长度已超上限，不解码直接拒绝
     try:
         binary = base64.b64decode(raw, validate=True)
     except (binascii.Error, ValueError):
         return None
     if not binary:
+        return None
+    if max_bytes is not None and len(binary) > max_bytes:
         return None
     return cv2.imdecode(np.frombuffer(binary, dtype=np.uint8), cv2.IMREAD_COLOR)
 
@@ -343,7 +353,7 @@ def limit_max_side(image, max_side: int = MAX_FRAME_SIDE):
 | 6 | `GET` | `/api/face/library` | — | `ApiResponse[LibraryData]` | `docs/03-04` |
 | 7 | `DELETE` | `/api/face/library` | query（`name`） | `ApiResponse[DeleteData]` | `docs/03-04` |
 
-接口分组（OpenAPI tags）：`system`（健康检查）、`face`（采集与库管理）、`recognize`（识别推理）。
+接口分组（OpenAPI tags）：`system`（健康检查）、`face`（采集）、`library`（特征库列表/删除）、`recognize`（识别推理）。
 
 `/api/health` 实现示意：
 
@@ -378,7 +388,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 | 改造点 | 内容 | 原因 |
 |--------|------|------|
 | 连接参数 | `sqlite3.connect(self.db_path, check_same_thread=False)` | 允许线程池 worker 复用同一连接 |
-| 写锁 | 模块级 `_DB_LOCK = threading.RLock()`，在 `save_feature` / `delete_by_name` 内加锁 | SQLite 单连接不接受并发写；`RLock` 允许同线程嵌套调用 |
+| 写锁 | 模块级 `_DB_LOCK = threading.RLock()`，包建表、`save_feature` / `exists_name` / `list_records` / `get_all_features` / `delete_by_name` / `close` | SQLite 单连接不接受并发写；`RLock` 允许同线程嵌套调用 |
 | 读一致性 | `get_all_features` 读操作同样加锁（或使用同一把锁） | 避免「读一半 + 写」交叠导致行序错位 |
 
 推理侧：`torch` 模型可被多线程只读调用，但**实时帧接口必须串行**（同一时刻只允许 1 帧在算），否则 GPU 显存/CPU 线程争抢会让每一帧都变慢，见 `docs/03-03` 的 `threading.Lock` 丢帧策略。
@@ -419,10 +429,12 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 
 | 验证项 | 结果 |
 |--------|------|
-| 全量回归 | `python -m pytest -q` → **54 passed**（`testpaths = tests`，含阶段 2 算法与 CLI 用例） |
+| 全量回归（阶段 3-1 完成时） | `python -m pytest -q` → **54 passed**（当时仅阶段 2 用例 + 骨架自检） |
+| 当前全量回归（2026-10-19 复核） | `python -m pytest -q` → **185 passed**（阶段 2 65 + 阶段 3 120；详见 `docs/03-05`） |
 | 真实启动（`FACENET_WARMUP=1`） | 日志：`检测器就绪` → `FaceNet 设备: cuda` → `特征库记录数: 2` → `Application startup complete` |
 | `GET /api/health` | `200`，`code=0`，`device=cuda`，`feature_dim=512`，`library_size=2` |
-| `/docs` / `/openapi.json` | 均 `200`；`components.schemas` 共 12 项（11 个公共模型 + 路由泛型实例 `ApiResponse_HealthData_`）；阶段 3-1 仅有 `GET /api/health` 路由 |
+| `/docs` / `/openapi.json` | 均 `200`；阶段 3-1 完成时 `components.schemas` 共 12 项（11 个公共模型 + 路由泛型实例 `ApiResponse_HealthData_`），当时仅有 `GET /api/health` |
+| `/docs` / `/openapi.json`（当前复核） | 均 `200`；6 条 path、7 个接口（`GET/DELETE /api/face/library` 共用一条 path）；`components.schemas` 共 20 项（含 5 个路由泛型实例、请求体模型与框架模型） |
 | CORS 预检 | `localhost:5173` 与 `127.0.0.1:5173` 的 `OPTIONS` 均 `200`，且回显 `access-control-allow-origin` |
 | 静态资源 | `/static/recognize_121224500.jpg` → `200`、`image/jpeg`、15416 B |
 | 数据库并发 | 20 线程并发写入 20 条记录无异常，数量/姓名一致；20 线程并发删除后剩余 0 条；`close()` 重复调用正常 |
@@ -434,8 +446,8 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 
 ## 六、验收清单
 
-- [x] `uvicorn api_server:app --host 0.0.0.0 --port 8000` 可正常启动，无 import 期副作用（实测 `127.0.0.1:8000` 启动成功）
-- [x] `http://127.0.0.1:8000/docs` 可访问；阶段 3-1 仅 `system` 分组，`face` / `library` / `recognize` 随 `03-02 ~ 03-04` 接入
+- [x] `uvicorn api_server:app --host 0.0.0.0 --port 8000` 可正常启动（实测 `127.0.0.1:8000` 启动成功）；FaceNet 无导入期加载，Haar/SQLite 因复用 `main.draw_results` 存在导入期单例副作用（见 4.3 说明）
+- [x] `http://127.0.0.1:8000/docs` 可访问；当前含 `system` / `face` / `library` / `recognize` 四个分组（阶段 3-1 完成时仅 `system`，其余随 `03-02 ~ 03-04` 接入）
 - [x] `GET /api/health` 返回 `code=0`，含 `device`、`feature_dim=512`、`library_size`
 - [x] Pydantic 模型字段类型、默认值与 `docs/03-02 ~ 03-04` 示例逐字段核对一致
 - [x] 启动日志明确输出「检测器就绪 / FaceNet 设备 / 特征库记录数」
@@ -454,7 +466,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 |---|------|------|------------|
 | 1 | **SQLite 跨线程访问** | 同步路由在线程池执行，`face_db` 在主线程创建 → `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread` | `sqlite3.connect(..., check_same_thread=False)` + 模块级 `RLock` 包住读写；已在本文档 4.9 列为 Step 3-1 必做改造 |
 | 2 | **FaceNet 懒加载竞态** | 两个并发识别请求同时看到 `cls._model is None`，各自加载一次权重，显存翻倍且日志重复 | 生命周期内预热（默认）；若关闭预热，则 `_get_model` 内加 `threading.Lock` 双检 |
-| 3 | **导入即加载模型** | 沿用 `main.py` 的「模块级 `face_detector = FaceDetection()`」写法，pytest 收集用例、`--reload` 重载都会触发加载 | 接口层改为 `lifespan` 内初始化并挂到 `app.state` |
+| 3 | **导入即加载模型** | `api_server` 复用 `main.draw_results` 时会导入 `main`，触发其模块级 `FaceDetection()` 与 `face_db` 连接；FaceNet 仍由 `lifespan` 控制 | 接口推理使用 `app.state.detector`；如要彻底消除 Haar 导入期副作用，可把 `draw_results`/`put_chinese_text` 抽到独立无副作用模块，当前未改 |
 | 4 | **`/docs` 依赖 CDN** | 内网/离线环境下 Swagger UI 的 js/css 从 CDN 拉取，页面空白 | 调试时改用 `/openapi.json`；或将 Swagger 静态资源本地化后再挂载 |
 | 5 | **CORS origin 精确匹配** | 只放行 `http://localhost:5173`，但浏览器访问的是 `http://127.0.0.1:5173` → 被拦 | 两个 host 各放行一份（默认已配置 4 条）；环境变量可覆盖 |
 | 6 | **`from db_utils import face_db` 绑定值** | 导入时即绑定对象，运行期把 `db_utils.face_db` 换成测试库后，`face_recognition.py` / `api_server.py` 仍指向旧库 | 接口层统一 `import db_utils` + `db_utils.face_db.xxx`；测试只需替换一处（详见 `docs/03-05`） |

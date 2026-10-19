@@ -30,7 +30,7 @@
 
 ## 🛠 技术栈
 
-### 后端（Python 3.10+）
+### 后端（Python 3.11）
 
 | 组件 | 用途 |
 | --- | --- |
@@ -58,17 +58,20 @@ face-recognition-facenet-opencv-web/
 ├── backend/                    # Python 人脸算法后端
 │   ├── sample_faces/           # 人脸样本集（建议 ≥5 张，覆盖不同光照/角度/距离）
 │   ├── result_output/          # 识别结果输出图片
+│   ├── tests/                  # pytest 自动化测试（8 个文件，185 项）
+│   ├── pytest.ini              # pytest 配置（testpaths / api 标记）
 │   ├── main.py                 # CLI 控制台调试入口
 │   ├── api_server.py           # FastAPI Web 服务
 │   ├── face_detection.py       # Haar 人脸检测模块
 │   ├── face_recognition.py     # FaceNet 特征提取与比对模块
 │   ├── db_utils.py             # SQLite 特征数据库模块
-│   ├── tests/                  # pytest 单元测试（54 项）
-│   ├── pytest.ini              # pytest 配置
 │   └── face_features.db        # 特征库（首次运行自动生成）
-├── frontend/                   # Vue3 前端项目
-├── docs/                       # 项目文档
-└── requirements.txt            # Python 依赖清单
+├── frontend/                   # Vue3 前端项目（阶段 4 待初始化，当前仅 .gitkeep）
+├── docs/                       # 项目文档（总纲 + 阶段 1~3 共 11 份）
+├── temp/                       # 本地临时指导文档（已忽略）
+├── requirements.txt            # Python 依赖清单
+├── .gitignore                  # 版本控制忽略规则
+└── README.md                   # 项目入口说明
 ```
 
 ---
@@ -78,17 +81,14 @@ face-recognition-facenet-opencv-web/
 ### 1. 后端部署
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-
-# 激活虚拟环境
-# Windows
-venv\Scripts\activate
-# Linux / macOS
-source venv/bin/activate
+# 创建并激活 conda 环境（与项目实测环境一致；也可使用 venv）
+conda create -n cv_demo python=3.11 -y
+conda activate cv_demo
 
 # 安装依赖
 pip install -r requirements.txt
+
+# CUDA 版 torch 的安装/离线权重放置见 temp/TORCH_INSTALL_GUIDE.md
 ```
 
 ### 2. 启动后端
@@ -107,7 +107,7 @@ CLI 菜单功能如下：
 4. 从图片识别人脸
 5. 摄像头实时识别人脸
 6. 删除已录入人脸
-7. 退出系统
+7. 退出系统（实际菜单项为 `0`）
 
 ```bash
 # 方式 B：启动 FastAPI Web 后端服务
@@ -115,7 +115,7 @@ cd backend
 uvicorn api_server:app --host 0.0.0.0 --port 8000
 ```
 
-### 3. 前端部署
+### 3. 前端部署（阶段 4 初始化后）
 
 ```bash
 cd frontend
@@ -130,7 +130,7 @@ cd backend
 python -m pytest -v
 ```
 
-覆盖范围：人脸检测（`test_face_detection.py`）、SQLite 特征库（`test_db_utils.py`）、FaceNet 特征提取与比对（`test_face_recognition.py`）、CLI 业务流程（`test_main.py`）。
+覆盖范围：人脸检测（`test_face_detection.py`）、SQLite 特征库（`test_db_utils.py`）、FaceNet 特征提取与比对（`test_face_recognition.py`）、CLI 业务流程（`test_main.py`）、采集 / 识别 / 特征库 / 集成接口（`test_api_register.py` / `test_api_recognize.py` / `test_api_library.py` / `test_api_server.py`）。当前共 **185 项**（阶段 2 单测 65 项 + 阶段 3 接口 120 项）。
 
 - 测试样例位于 `backend/sample_faces/_test_samples/`（`one_face.jpg` / `no_face.jpg`，缺失时相关用例自动 `skip`）；
 - 特征库测试使用 `tmp_path` 临时库，**不会污染** `face_features.db`；
@@ -182,13 +182,15 @@ python -m pytest -v
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/faces/register` | 录入人脸（图片/base64） |
-| `GET` | `/api/faces` | 查看特征库 |
-| `POST` | `/api/faces/recognize` | 从图片识别人脸 |
-| `DELETE` | `/api/faces/{id}` | 删除已录入人脸 |
-| `POST` | `/api/faces/register-camera` | 通过摄像头录入人脸 |
+| `GET` | `/api/health` | 健康检查（设备、检测器、特征维度、库记录数） |
+| `POST` | `/api/face/register/image` | 上传图片 + 姓名，检测后取最大脸入库 |
+| `POST` | `/api/face/register/camera-frame` | base64 / dataURL 摄像头帧入库 |
+| `GET` | `/api/face/library` | 特征库元信息列表（ID、姓名、时间、维度） |
+| `DELETE` | `/api/face/library?name=xxx` | 按姓名删除全部同名记录 |
+| `POST` | `/api/recognize/image` | 上传图片识别，可保存标注图 |
+| `POST` | `/api/recognize/frame` | base64 / dataURL 摄像头帧识别 |
 
-> ⚠️ 以上为典型接口设计，实际路径以 `api_server.py` 为准；如接口有出入请以源码为准。
+> 统一响应信封为 `{code, message, data}`；完整参数、错误码（1001~1008、422）与示例见 `docs/03-01` ~ `docs/03-04`。Swagger UI：`http://127.0.0.1:8000/docs`。
 
 ---
 
