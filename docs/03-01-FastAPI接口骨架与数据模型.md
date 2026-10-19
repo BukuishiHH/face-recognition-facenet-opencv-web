@@ -2,8 +2,8 @@
 
 > **所属阶段**：阶段 3 · Web 后端接口层（FastAPI）
 > **对应总纲**：`docs/development_steps.md` → Step 3-1（FastAPI 项目骨架与公共模型定义）
-> **源码文件**：`backend/api_server.py`（已新建）
-> **文档状态**：📝 设计完成，待编码实现
+> **源码文件**：`backend/api_server.py`（新建）、`backend/db_utils.py`（线程安全适配）
+> **文档状态**：✅ 已实现（2026-10-19，M3-1.1 ~ M3-1.8 全部完成）
 
 ---
 
@@ -393,30 +393,58 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 
 | 里程碑 | 交付物 | 判定标准 | 状态 |
 |--------|--------|----------|------|
-| M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ✅ 已完成（2026-10-19，`TestClient` 访问 `/docs`、`/openapi.json` 均 200） |
-| M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个模型） |
-| M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ✅ 已完成（2026-10-19，`FACENET_WARMUP=0` 启动/关闭正常，检测器与库记录数日志输出） |
+| M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ✅ 已完成（2026-10-19，真实 `uvicorn` 启动成功，`/docs`、`/openapi.json` 均 200） |
+| M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个公共模型，另含 FastAPI 自动生成的 `HTTPValidationError`） |
+| M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ✅ 已完成（2026-10-19，`FACENET_WARMUP=1` 预热至 CUDA；`=0` 懒加载，启动/关闭正常） |
 | M3-1.4 | CORS 配置 | 带 `Origin: http://localhost:5173` 的 `OPTIONS` 预检返回 200 且带 `access-control-allow-origin` | ✅ 已完成（2026-10-19，`localhost` / `127.0.0.1` 两种 origin 预检均通过） |
 | M3-1.5 | 统一响应与异常处理 | 业务错误返回 `code != 0`；`422` 与未捕获异常均返回统一信封 | ✅ 已完成（2026-10-19，`/api/health` 返回 `code=0`；`422` 与 `1007` 均为 `{code,message,data}`） |
 | M3-1.6 | 解码 / 缩放工具 | `base64`、`dataURL`、上传字节三路均可解码；缩放后坐标可按 `scale` 还原 | ✅ 已完成（2026-10-19，三路解码一致；2000×1000 缩放至 1280×640，坐标还原正确） |
 | M3-1.7 | 数据库线程安全适配 | 并发 20 次读写无 `ProgrammingError`，数据无错行 | ✅ 已完成（2026-10-19，20 线程并发写入 20 条记录无异常，数量/姓名一致；`close()` 可重复调用） |
 | M3-1.8 | 静态资源挂载 | `/static/<file>.jpg` 可访问 `result_output/` 内文件 | ✅ 已完成（2026-10-19，`/static/recognize_121224500.jpg` 返回 200 且 `content-type=image/jpeg`） |
 
+### 5.1 实施记录（2026-10-19）
+
+| 里程碑 | 提交 | 核心改动 |
+|--------|------|----------|
+| M3-1.1 | `24b9f04` | 创建 `api_server.py`，落地公共常量与 FastAPI 实例 |
+| M3-1.2 | `933dc33` | 定义 11 个 Pydantic 模型；自定义 `_build_openapi` 补齐未被路由引用的 schema |
+| M3-1.3 | `9239484` | `lifespan` 内加载 Haar、按 `FACENET_WARMUP` 预热 FaceNet、退出时关闭数据库 |
+| M3-1.4 | `4a0ea07` | CORS 默认放行 5173 / 4173 的 `localhost` 与 `127.0.0.1`，支持环境变量覆盖 |
+| M3-1.5 | `b667b5c` | `ok()` / `fail()` 统一信封、422 校验处理、1007 兜底、`GET /api/health` |
+| M3-1.6 | `57d6865` | `decode_base64_image` / `decode_upload_image` / `limit_max_side` |
+| M3-1.7 | `940bad9` | `db_utils` 增加模块级 `RLock`，读写与 `close()` 串行化，`close()` 幂等 |
+| M3-1.8 | `aea1046` | 将 `result_output/` 挂载到 `/static` |
+
+### 5.2 阶段 3-1 验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| 全量回归 | `python -m pytest -q` → **54 passed**（`testpaths = tests`，含阶段 2 算法与 CLI 用例） |
+| 真实启动（`FACENET_WARMUP=1`） | 日志：`检测器就绪` → `FaceNet 设备: cuda` → `特征库记录数: 2` → `Application startup complete` |
+| `GET /api/health` | `200`，`code=0`，`device=cuda`，`feature_dim=512`，`library_size=2` |
+| `/docs` / `/openapi.json` | 均 `200`；`components.schemas` 共 12 项（11 个公共模型 + `HTTPValidationError`）；阶段 3-1 仅有 `GET /api/health` 路由 |
+| CORS 预检 | `localhost:5173` 与 `127.0.0.1:5173` 的 `OPTIONS` 均 `200`，且回显 `access-control-allow-origin` |
+| 静态资源 | `/static/recognize_121224500.jpg` → `200`、`image/jpeg`、15416 B |
+| 数据库并发 | 20 线程并发写入 20 条记录无异常，数量/姓名一致；20 线程并发删除后剩余 0 条；`close()` 重复调用正常 |
+| 失败信封 | `422` 与未捕获异常 `1007` 均为 `{code, message, data}`；`1001~1005`、`1008` 复用 `fail()`，随业务路由验证 |
+
+> 阶段 3-1 只交付「骨架 + 公共能力」。`/api/face/*` 与 `/api/recognize/*` 路由分别由 `docs/03-02`、`docs/03-03`、`docs/03-04` 实现，届时 `/docs` 会增加 `face` / `library` / `recognize` 分组。
+
 ---
 
 ## 六、验收清单
 
-- [ ] `uvicorn api_server:app --host 0.0.0.0 --port 8000` 可正常启动，无 import 期副作用
-- [ ] `http://127.0.0.1:8000/docs` 可访问，接口按 `system` / `face` / `recognize` 分组展示
-- [ ] `GET /api/health` 返回 `code=0`，含 `device`、`feature_dim=512`、`library_size`
-- [ ] Pydantic 模型字段类型、默认值与 `docs/03-02 ~ 03-04` 完全一致
-- [ ] 启动日志明确输出「检测器就绪 / FaceNet 设备 / 特征库记录数」
-- [ ] `FACENET_WARMUP=0` 时启动不加载权重，首个识别请求才加载
-- [ ] CORS 预检通过，`localhost` 与 `127.0.0.1` 两种 origin 均被放行
-- [ ] 所有错误响应（`1001/1002/1003/1004/1005/1007/422`）结构统一为 `{code, message, data}`
-- [ ] 传入 5 MB 以上文件返回 `1001`，不进入推理
-- [ ] 数据库跨线程访问无异常，20 并发写入后记录数正确
-- [ ] `/static/` 挂载路径与 `RESULT_DIR` 一致，未挂载时不影响主流程
+- [x] `uvicorn api_server:app --host 0.0.0.0 --port 8000` 可正常启动，无 import 期副作用（实测 `127.0.0.1:8000` 启动成功）
+- [x] `http://127.0.0.1:8000/docs` 可访问；阶段 3-1 仅 `system` 分组，`face` / `library` / `recognize` 随 `03-02 ~ 03-04` 接入
+- [x] `GET /api/health` 返回 `code=0`，含 `device`、`feature_dim=512`、`library_size`
+- [x] Pydantic 模型字段类型、默认值与 `docs/03-02 ~ 03-04` 示例逐字段核对一致
+- [x] 启动日志明确输出「检测器就绪 / FaceNet 设备 / 特征库记录数」
+- [x] `FACENET_WARMUP=0` 时启动不加载权重，首个识别请求才加载（M3-1.3 已验证）
+- [x] CORS 预检通过，`localhost` 与 `127.0.0.1` 两种 origin 均被放行
+- [x] 统一错误信封已落地：`422` 与 `1007` 已实测；`1001~1005`、`1008` 复用 `fail()`，随业务路由验证
+- [ ] 传入 5 MB 以上文件返回 `1001`，不进入推理（依赖 `/api/face/register/image`，待 `03-02` 实现）
+- [x] 数据库跨线程访问无异常，20 并发写入后记录数正确
+- [x] `/static/` 挂载路径与 `RESULT_DIR` 一致，未挂载时不影响主流程
 
 ---
 
