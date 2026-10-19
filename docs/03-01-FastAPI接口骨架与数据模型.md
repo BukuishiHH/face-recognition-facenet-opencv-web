@@ -2,7 +2,7 @@
 
 > **所属阶段**：阶段 3 · Web 后端接口层（FastAPI）
 > **对应总纲**：`docs/development_steps.md` → Step 3-1（FastAPI 项目骨架与公共模型定义）
-> **源码文件**：`backend/api_server.py`（待新建）
+> **源码文件**：`backend/api_server.py`（已新建）
 > **文档状态**：📝 设计完成，待编码实现
 
 ---
@@ -390,7 +390,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 
 | 里程碑 | 交付物 | 判定标准 | 状态 |
 |--------|--------|----------|------|
-| M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ⬜ 待开始 |
+| M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ✅ 已完成（2026-10-19，`TestClient` 访问 `/docs`、`/openapi.json` 均 200） |
 | M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ⬜ 待开始 |
 | M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ⬜ 待开始 |
 | M3-1.4 | CORS 配置 | 带 `Origin: http://localhost:5173` 的 `OPTIONS` 预检返回 200 且带 `access-control-allow-origin` | ⬜ 待开始 |
