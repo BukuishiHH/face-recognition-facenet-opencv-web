@@ -397,7 +397,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 | M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个模型） |
 | M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ✅ 已完成（2026-10-19，`FACENET_WARMUP=0` 启动/关闭正常，检测器与库记录数日志输出） |
 | M3-1.4 | CORS 配置 | 带 `Origin: http://localhost:5173` 的 `OPTIONS` 预检返回 200 且带 `access-control-allow-origin` | ✅ 已完成（2026-10-19，`localhost` / `127.0.0.1` 两种 origin 预检均通过） |
-| M3-1.5 | 统一响应与异常处理 | 业务错误返回 `code != 0`；`422` 与未捕获异常均返回统一信封 | ⬜ 待开始 |
+| M3-1.5 | 统一响应与异常处理 | 业务错误返回 `code != 0`；`422` 与未捕获异常均返回统一信封 | ✅ 已完成（2026-10-19，`/api/health` 返回 `code=0`；`422` 与 `1007` 均为 `{code,message,data}`） |
 | M3-1.6 | 解码 / 缩放工具 | `base64`、`dataURL`、上传字节三路均可解码；缩放后坐标可按 `scale` 还原 | ⬜ 待开始 |
 | M3-1.7 | 数据库线程安全适配 | 并发 20 次读写无 `ProgrammingError`，数据无错行 | ⬜ 待开始 |
 | M3-1.8 | 静态资源挂载 | `/static/<file>.jpg` 可访问 `result_output/` 内文件 | ⬜ 待开始 |

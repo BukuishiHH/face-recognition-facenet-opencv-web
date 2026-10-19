@@ -17,9 +17,12 @@ import os
 from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
-from fastapi import FastAPI
+import torch
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import db_utils
@@ -130,6 +133,18 @@ class HealthData(BaseModel):
     library_size: int
 
 
+# --------------------------------------- 统一响应工具 ---------------------------------------
+def ok(data=None, message: str = 'ok') -> dict:
+    """成功信封: 路由统一返回 dict, 由 response_model 做二次校验"""
+    return {'code': 0, 'message': message, 'data': data}
+
+
+def fail(code: int, message: str, status_code: int = 200) -> JSONResponse:
+    """失败信封: 直接返回 JSONResponse, 绕过 response_model"""
+    return JSONResponse(status_code=status_code,
+                        content={'code': code, 'message': message, 'data': None})
+
+
 # --------------------------------------- 生命周期 ---------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -215,4 +230,45 @@ def _build_openapi():
 
 
 app.openapi = _build_openapi
+
+
+# --------------------------------------- 统一异常处理 ---------------------------------------
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Pydantic 结构校验失败: 422 + 统一信封"""
+    first = exc.errors()[0]
+    field = '.'.join(str(x) for x in first.get('loc', []) if x != 'body')
+    return JSONResponse(
+        status_code=422,
+        content={
+            'code': 422,
+            'message': f'参数校验失败: {field} {first.get("msg", "")}',
+            'data': None,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """未捕获异常兜底: 1007 + 统一信封, 异常栈只进日志"""
+    logger.exception('未捕获异常 %s %s: %s', request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={'code': 1007, 'message': '服务内部错误', 'data': None},
+    )
+
+
+# --------------------------------------- 系统接口 ---------------------------------------
+@app.get('/api/health', response_model=ApiResponse[HealthData], tags=['system'])
+def health():
+    """健康检查: 服务状态 / 设备 / 检测器 / 特征维度 / 特征库记录数"""
+    _, info_list = db_utils.face_db.get_all_features()
+    return ok(HealthData(
+        status='ok',
+        version=VERSION,
+        device=FaceRecognition._device or ('cuda' if torch.cuda.is_available() else 'cpu'),
+        detector=DETECTOR_MODEL,
+        feature_dim=FEATURE_DIM,
+        library_size=0 if info_list is None else len(info_list),
+    ))
 
