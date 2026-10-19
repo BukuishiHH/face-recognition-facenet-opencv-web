@@ -34,7 +34,8 @@
 
 | 组件 | 用途 |
 | --- | --- |
-| `OpenCV-Python 4.x` | Haar 人脸检测（注意：必须 4.x，5.x 移除了 CascadeClassifier） |
+| `OpenCV-Python 4.8.x` | Haar 人脸检测（必须 4.8.x：5.x 移除了 CascadeClassifier，4.14.x 要求 NumPy 2） |
+| `NumPy 1.26.x` | 数组运算（锁定 1.x，与 torch 2.2.2 / opencv 4.8.1 的 ABI 匹配） |
 | `FaceNet-Pytorch` | 人脸特征提取（512 维） |
 | `SQLite3` | 存储人脸身份标签与二进制特征向量 |
 | `FastAPI` | 提供 HTTP 接口供 Vue 前端调用 |
@@ -158,10 +159,11 @@ python -m pytest -v
 
 ## 📌 已知注意事项
 
-1. **OpenCV 版本要求**：`opencv-python` 必须使用 **4.x** 版本；5.x 已移除 `CascadeClassifier`，无法使用 Haar 级联检测。
-2. **预训练权重下载**：FaceNet 首次运行会自动下载 `casia-webface` 预训练权重，需保持网络畅通。
-3. **中文字体**：Windows 环境需 `simhei.ttf`（黑体），缺失会导致控制台绘图中文乱码。
-4. **硬件加速**：GPU 环境自动启用 CUDA 加速；无 GPU 自动降级为 CPU 运行。
+1. **OpenCV 版本要求**：`opencv-python` 固定 **4.8.x**（实测 4.8.1.78）；5.x 已移除 `CascadeClassifier`，4.14.x 又要求 NumPy 2，均无法与本项目共存。
+2. **NumPy 版本要求**：必须 **1.x**（实测 1.26.4）；升级到 2.x 会导致 `cv2` / `torch` 出现 NumPy ABI 报错。
+3. **预训练权重下载**：FaceNet 首次运行会自动下载 `casia-webface` 预训练权重，需保持网络畅通。
+4. **中文字体**：Windows 环境需 `simhei.ttf`（黑体），缺失会导致控制台绘图中文乱码。
+5. **硬件加速**：GPU 环境自动启用 CUDA 加速；无 GPU 自动降级为 CPU 运行。
 
 ---
 

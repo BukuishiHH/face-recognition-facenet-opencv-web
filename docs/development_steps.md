@@ -66,8 +66,8 @@
 
 - **文档**：`docs/01-02-后端环境搭建.md`（原「后端环境与CLI功能验证」）
 - **任务**：
-  - [ ] 创建 Python 虚拟环境，安装 requirements.txt（**opencv-python>=4.8,<5**）
-  - [ ] 安装并确认 `fastapi`、`uvicorn`、`python-multipart`、`numpy`、`torch` 等依赖可正常导入
+  - [ ] 创建 Python 虚拟环境，安装 requirements.txt（**opencv-python>=4.8,<4.9**、**numpy>=1.24,<2**）
+  - [ ] 安装并确认 `fastapi`、`uvicorn`、`python-multipart`、`numpy`、`torch`、`httpx`、`aiofiles` 等依赖可正常导入
   - [ ] 验证 opencv 为 4.x，无 CascadeClassifier API 报错
 - **产出**：可用且可一键重建的 Python 环境
 - **验收**：venv 可重建；依赖版本全部锁定；opencv 为 4.x；依赖可导入
@@ -261,7 +261,7 @@
 
 ## 七、风险与注意事项
 
-- **依赖版本**：`opencv-python` 必须锁定 `>=4.8,<5`，避免 CascadeClassifier API 变更报错。
+- **依赖版本**：`opencv-python` 必须锁定 `>=4.8,<4.9`、`numpy` 必须锁定 `>=1.24,<2`。前者避免 CascadeClassifier API 变更报错，后者避免 torch 2.2.2 / opencv 4.8.1 的 NumPy 1.x ABI 冲突（opencv 4.14 又要求 numpy>=2，不可混用）。
 - **模型推理**：FaceNet 需支持 CPU/GPU 自动切换；实时识别注意帧率与特征比对耗时平衡。
 - **跨域**：前端 dev server 与后端 8000 端口必须配置 CORS，否则浏览器拦截请求。
 - **摄像头**：前端需处理 HTTPS/安全上下文下的 MediaDevices 权限限制。

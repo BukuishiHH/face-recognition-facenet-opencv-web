@@ -6,13 +6,19 @@
 # 注意事项 : torch / facenet-pytorch 体积较大(数百 MB),
 #            请勿直接随本文件批量安装, 请先阅读 temp/TORCH_INSTALL_GUIDE.md
 #            按指导文档手动安装后再执行本项目其余功能。
+# 实测组合 : 2026-10, Python 3.11.17 / CUDA 12.1 (RTX 4060 Laptop)
 # =============================================================================
 
 # ---------------------------- 核心算法层 -------------------------------------
-# 必须锁定 4.x: opencv-python 5.x 已移除 cv2.CascadeClassifier, Haar 级联检测不可用
-opencv-python>=4.8,<5
+# 必须锁定 4.8.x:
+#   1) opencv-python 5.x 已移除 cv2.CascadeClassifier, Haar 级联检测不可用;
+#   2) 4.14.x 在 Python>=3.9 上元数据要求 numpy>=2, 与下方 numpy<2 冲突;
+#   3) 实测可用版本为 4.8.1.78.
+opencv-python>=4.8,<4.9
 # 数组 / 矩阵运算, 特征向量(BLOB)序列化
-numpy>=1.24,<3
+# 必须保持 1.x: torch 2.2.2 / opencv-python 4.8.1 均基于 NumPy 1.x ABI;
+# 实测 1.26.4, 升级到 2.x 会导致 cv2 / torch 导入或互操作报错
+numpy>=1.24,<2
 # 图像读写与 FaceNet 前处理
 Pillow>=10.0
 
@@ -20,17 +26,25 @@ Pillow>=10.0
 # 见 temp/TORCH_INSTALL_GUIDE.md
 # 版本核实(2026-10 实测 PyPI): torch 最新 2.14.1; facenet-pytorch 最新 2.6.0
 # (注意: facenet-pytorch 无 2.5.10 版本, 可用版本为 2.5.1/2.5.2/2.5.3/2.6.0)
-torch>=2.2
+# 实测部署组合: torch 2.2.2+cu121 / torchvision 0.17.2+cu121 / facenet-pytorch 2.5.3
+# torch 锁定 2.2.x: 实测与 facenet-pytorch 2.5.3 兼容, 且 cu121 索引提供 Windows 的 2.2.x wheel;
+#                   若升级 facenet-pytorch 2.6.0, 其 METADATA 要求 torch>=2.2.0,<2.3.0
+torch>=2.2,<2.3
+torchvision>=0.17,<0.18
 facenet-pytorch>=2.5.3
 
 # ---------------------------- Web 接口层 (阶段 3) ----------------------------
 fastapi>=0.100
 uvicorn>=0.23
 python-multipart>=0.0.6
+# FastAPI TestClient 依赖(阶段 3 接口测试), 实测 0.28.1
+httpx>=0.27
+# StaticFiles 静态资源挂载(阶段 3 前端联调), 实测 25.1.0
+aiofiles>=23.2
 
 # ---------------------------- 测试与工具 -------------------------------------
 pytest>=7.4
 requests>=2.28
 # 余弦相似度比对(backend/face_recognition.py);
-# 注意: numpy 必须为 1.x —— facenet-pytorch 2.6.0 硬约束 numpy<2.0.0
+# 注意: numpy 必须为 1.x —— torch 2.2.2 / opencv-python 4.8.1 均基于 NumPy 1.x ABI
 scikit-learn>=1.3
