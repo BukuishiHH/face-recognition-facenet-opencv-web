@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
@@ -164,6 +165,25 @@ app = FastAPI(
     description='基于 FaceNet + OpenCV 的人脸检测、特征录入、识别与特征库管理接口',
     version=VERSION,
     lifespan=lifespan,
+)
+
+# --------------------------------------- CORS ---------------------------------------
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173,'
+        'http://localhost:4173,http://127.0.0.1:4173',
+    ).split(',')
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=['*'],
+    allow_headers=['*'],
 )
 
 # --------------------------------------- OpenAPI 扩展 ---------------------------------------
