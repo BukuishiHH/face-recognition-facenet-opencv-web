@@ -415,3 +415,26 @@ def register_by_image(file: UploadFile = File(...), name: str = Form(...)):
     return fail(code, message) if code else ok(data, message)
 
 
+@app.post('/api/face/register/camera-frame', response_model=ApiResponse[RegisterData], tags=['face'])
+def register_by_frame(payload: FrameRegisterRequest):
+    """帧入库: 前端 canvas dataURL / 裸 base64 + 姓名 → 检测 → 特征 → 入库"""
+    normalized = _validate_name(payload.name)
+    if normalized is None:
+        return fail(1001, ERR_NAME)
+
+    if not payload.image_base64:
+        logger.warning('帧入库请求缺少图片数据: name=%s', normalized)
+        return fail(1001, ERR_BASE64)
+    logger.info('帧入库请求: name=%s, base64=%d 字符', normalized, len(payload.image_base64))
+
+    image = decode_base64_image(payload.image_base64)
+    if image is None:
+        logger.warning('帧解码失败: name=%s, base64=%d 字符', normalized, len(payload.image_base64))
+        return fail(1001, ERR_BASE64)
+    logger.info('帧解码完成: name=%s, 尺寸=%dx%d', normalized, image.shape[1], image.shape[0])
+
+    code, message, data = _register_from_bgr(image, normalized)
+    return fail(code, message) if code else ok(data, message)
+
+
+
