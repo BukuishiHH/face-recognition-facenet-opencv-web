@@ -16,8 +16,9 @@ import base64
 import binascii
 import logging
 import os
+import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Generic, TypeVar
 
 import cv2
@@ -29,9 +30,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 import db_utils
+import main
 from face_detection import FaceDetection
 from face_recognition import FaceRecognition
 
@@ -67,6 +69,15 @@ ERR_BASE64 = '图片为空、base64 非法或格式不支持'
 ERR_NO_FACE = '未检测到人脸，请更换图片或正对摄像头'
 ERR_FEATURE = '人脸特征提取失败，请重试'
 
+# 识别接口提示(docs/03-03)
+ERR_THRESHOLD = f'阈值需在 {THRESHOLD_MIN} ~ {THRESHOLD_MAX} 之间'
+ERR_RECOGNIZE_IMAGE = '图片为空、超过 5MB 或格式不支持'
+ERR_RECOGNIZE_FRAME = '帧数据为空、超过 5MB 或非法 base64'
+ERR_INFER_BUSY = '推理服务繁忙，请稍后重试'
+ERR_FRAME_BUSY = '推理服务繁忙，请丢弃当前帧'
+
+_INFER_TIMEOUT = 10.0                   # 图片识别最长排队等待(秒)
+
 # --------------------------------------- 公共数据模型 ---------------------------------------
 T = TypeVar('T')
 
@@ -88,8 +99,13 @@ class FaceBox(BaseModel):
 class FaceResult(BaseModel):
     box: FaceBox                      # 原图坐标系下的人脸框
     name: str | None = None           # 匹配到的人名, 未匹配为 null
-    similarity: float = 0.0           # 最高余弦相似度(0~1)
+    similarity: float = 0.0           # 最高余弦相似度(0~1), 内存保留原始精度
     matched: bool = False             # 是否达到阈值
+
+    @field_serializer('similarity')
+    def _serialize_similarity(self, value: float) -> float:
+        """HTTP 输出保留 4 位小数; 内存值不取整, 便于与 CLI 做 <1e-6 比对"""
+        return round(float(value), 4)
 
 
 class RegisterData(BaseModel):
@@ -278,6 +294,145 @@ def _register_from_bgr(image, name):
     if len(faces) > 1:
         message = f'人脸录入成功（检测到 {len(faces)} 张人脸，已取最大人脸入库）'
         logger.info('多脸入库提示: name=%s, face_count=%d, selected=%s', name, len(faces), (x, y, w, h))
+    return 0, message, data
+
+
+# --------------------------------------- 人脸识别共用服务 ---------------------------------------
+class InferenceBusyError(RuntimeError):
+    """推理锁获取失败: 图片排队超时或帧已有任务在跑"""
+
+
+_infer_lock = threading.Lock()          # 同一时刻只允许 1 个推理任务
+
+
+@contextmanager
+def _infer_guard(blocking: bool = True, timeout: float | None = None):
+    """
+    推理并发保护
+
+    - 图片识别: blocking=True, 最多等待 _INFER_TIMEOUT 秒, 超时抛 InferenceBusyError;
+    - 摄像头帧: blocking=False, 抢不到锁立即抛错, 由路由转 1008 + 429。
+
+    路由必须保持同步 def(运行在线程池), 因此这里使用 threading.Lock 而非 asyncio.Lock。
+    """
+    wait = _INFER_TIMEOUT if timeout is None else timeout
+    acquired = (_infer_lock.acquire(timeout=wait) if blocking
+                else _infer_lock.acquire(blocking=False))
+    if not acquired:
+        raise InferenceBusyError('推理服务繁忙')
+    try:
+        yield
+    finally:
+        _infer_lock.release()
+
+
+def _draw_annotated(image, results: list[FaceResult]):
+    """把识别结果转成 main.draw_results 需要的 (faces, infos) 结构"""
+    faces = [(r.box.x, r.box.y, r.box.w, r.box.h) for r in results]
+    infos = [{'name': r.name, 'similarity': r.similarity} if r.matched else None
+             for r in results]
+    return main.draw_results(image.copy(), faces, infos)
+
+
+def _write_result(image, prefix: str) -> str:
+    """保存标注图到 result_output/, 返回文件名(不打印, 避免污染接口日志)"""
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    unique = int(time.time() * 1_000_000) % 1_000_000
+    filename = f'{prefix}_{stamp}_{unique:06d}.jpg'
+    ok_flag, buffer = cv2.imencode('.jpg', image)
+    if not ok_flag:
+        raise OSError('标注图编码失败')
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    with open(os.path.join(RESULT_DIR, filename), 'wb') as fp:
+        fp.write(buffer.tobytes())
+    return filename
+
+
+def _recognize_bgr(image, threshold: float, save_result: bool = False,
+                   prefix: str = 'api'):
+    """
+    检测 → 一次取库 → 逐脸特征 → 批量矩阵比对 → 组装结果
+
+    与协议无关: 图片上传和摄像头帧都调用本函数。
+    特征库为空时跳过特征提取, 仍返回全部人脸框(前端画红框提示录入)。
+    :return: (code, message, RecognizeData | None)
+    """
+    started = time.perf_counter()
+    img, scale = limit_max_side(image)
+
+    detector = app.state.detector
+    detect_started = time.perf_counter()
+    raw_faces = detector.detect_faces(img)
+    detect_ms = (time.perf_counter() - detect_started) * 1000
+    logger.debug('识别检测: 数量=%d, 缩放=%.4f, 耗时=%.1fms',
+                 len(raw_faces), scale, detect_ms)
+
+    if not raw_faces:
+        return 1002, ERR_NO_FACE, None
+
+    inv = 1.0 / scale
+    matrix, info_list = db_utils.face_db.get_all_features()   # 每次请求只取库一次
+    library_empty = matrix is None or not info_list
+
+    if library_empty:
+        # 空库不提取特征: 人脸框照常返回, 前端以 library_empty 做常驻提示
+        face_items = [(None, tuple(box)) for box in raw_faces]
+    else:
+        face_items = FaceDetection.crop_face_rois(img, raw_faces)
+
+    results: list[FaceResult] = []
+    for roi, (x, y, w, h) in face_items:
+        box = FaceBox(x=int(round(x * inv)), y=int(round(y * inv)),
+                      w=int(round(w * inv)), h=int(round(h * inv)))
+
+        if library_empty:
+            results.append(FaceResult(box=box, name=None, similarity=0.0, matched=False))
+            continue
+
+        feature_started = time.perf_counter()
+        feature = FaceRecognition.extract_feature(roi)
+        feature_ms = (time.perf_counter() - feature_started) * 1000
+        if feature is None:
+            logger.warning('识别特征提取失败: box=%s, 耗时=%.1fms', (x, y, w, h), feature_ms)
+            results.append(FaceResult(box=box, name=None, similarity=0.0, matched=False))
+            continue
+
+        # 库中特征与 extract_feature 输出均已 L2 归一, 点积等价于余弦相似度
+        sims = matrix @ feature.reshape(-1)
+        idx = int(np.argmax(sims))
+        similarity = float(sims[idx])
+        matched = similarity >= threshold
+        results.append(FaceResult(
+            box=box,
+            name=info_list[idx]['name'] if matched else None,
+            similarity=similarity,
+            matched=matched,
+        ))
+        logger.debug('识别单脸: box=%s, 最高相似度=%.6f, matched=%s, 特征耗时=%.1fms',
+                     (x, y, w, h), similarity, matched, feature_ms)
+
+    data = RecognizeData(
+        total_faces=len(results),
+        matched_count=sum(1 for item in results if item.matched),
+        elapsed_ms=int((time.perf_counter() - started) * 1000),
+        library_empty=library_empty,
+        faces=results,
+    )
+
+    if save_result:
+        try:
+            filename = _write_result(_draw_annotated(image, results), prefix)
+        except Exception as exc:                     # 保存失败不影响识别结果返回
+            logger.warning('识别结果图保存失败: %s', exc)
+        else:
+            data.result_image_url = f'{STATIC_PREFIX}/{filename}'
+
+    if library_empty:
+        message = '特征库为空，请先录入人脸'
+    else:
+        message = f'识别完成: {data.matched_count}/{data.total_faces} 人匹配成功'
+    logger.debug('识别完成: total=%d, matched=%d, library_empty=%s, 总耗时=%dms',
+                 data.total_faces, data.matched_count, library_empty, data.elapsed_ms)
     return 0, message, data
 
 
@@ -484,4 +639,67 @@ def register_by_frame(payload: FrameRegisterRequest):
     return fail(code, message) if code else ok(data, message)
 
 
+# --------------------------------------- 人脸识别接口 ---------------------------------------
+@app.post('/api/recognize/image', response_model=ApiResponse[RecognizeData], tags=['recognize'])
+def recognize_by_image(
+    file: UploadFile = File(...),
+    threshold: float = Form(DEFAULT_THRESHOLD),
+    save_result: bool = Form(False),
+):
+    """图片识别: multipart 上传图片 → 检测 → 批量比对 → 可选保存标注图"""
+    if not THRESHOLD_MIN <= threshold <= THRESHOLD_MAX:
+        logger.warning('图片识别阈值越界: threshold=%.3f', threshold)
+        return fail(1001, ERR_THRESHOLD)
+
+    raw, reject_reason = _validate_upload(file)
+    if raw is None:
+        logger.warning('识别图片被拒: 原因=%s', reject_reason)
+        return fail(1001, ERR_RECOGNIZE_IMAGE)
+    logger.info('图片识别请求: 上传=%d B, 阈值=%.2f, save_result=%s',
+                len(raw), threshold, save_result)
+
+    image = decode_upload_image(raw)
+    if image is None:
+        logger.warning('识别图片解码失败: 上传=%d B', len(raw))
+        return fail(1001, ERR_RECOGNIZE_IMAGE)
+    logger.info('识别图片解码完成: 尺寸=%dx%d', image.shape[1], image.shape[0])
+
+    try:
+        with _infer_guard(blocking=True):
+            code, message, data = _recognize_bgr(
+                image, threshold, save_result=save_result, prefix='api_image')
+    except InferenceBusyError:
+        logger.warning('图片识别排队超时(%.1fs)', _INFER_TIMEOUT)
+        return fail(1008, ERR_INFER_BUSY)
+
+    return fail(code, message) if code else ok(data, message)
+
+
+@app.post('/api/recognize/frame', response_model=ApiResponse[RecognizeData], tags=['recognize'])
+def recognize_by_frame(payload: FrameRecognizeRequest):
+    """摄像头帧识别: base64 / dataURL → 检测 → 批量比对; 忙时立即丢帧(429)"""
+    if not THRESHOLD_MIN <= payload.threshold <= THRESHOLD_MAX:
+        logger.warning('帧识别阈值越界: threshold=%.3f', payload.threshold)
+        return fail(1001, ERR_THRESHOLD)             # 阈值校验优先于 base64 解码
+
+    if not payload.image_base64:
+        logger.warning('帧识别请求缺少图片数据')
+        return fail(1001, ERR_RECOGNIZE_FRAME)
+    logger.debug('帧识别请求: base64=%d 字符, 阈值=%.2f',
+                 len(payload.image_base64), payload.threshold)
+
+    image = decode_base64_image(payload.image_base64, max_bytes=MAX_UPLOAD_BYTES)
+    if image is None:
+        logger.warning('帧识别解码失败: base64=%d 字符', len(payload.image_base64))
+        return fail(1001, ERR_RECOGNIZE_FRAME)
+    logger.debug('帧识别解码完成: 尺寸=%dx%d', image.shape[1], image.shape[0])
+
+    try:
+        with _infer_guard(blocking=False):           # 实时链路不排队, 忙则丢帧
+            code, message, data = _recognize_bgr(image, payload.threshold)
+    except InferenceBusyError:
+        logger.debug('帧识别丢弃: 推理服务繁忙')
+        return fail(1008, ERR_FRAME_BUSY, status_code=429)
+
+    return fail(code, message) if code else ok(data, message)
 
