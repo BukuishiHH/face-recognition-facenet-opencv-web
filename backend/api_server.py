@@ -164,9 +164,10 @@ def decode_base64_image(raw: str, max_bytes: int | None = None):
     """base64 / dataURL -> BGR ndarray; 失败或超过 max_bytes 返回 None"""
     if not raw:
         return None
-    if ',' in raw and raw.strip().startswith('data:'):
-        raw = raw.split(',', 1)[1]                  # 剥离 'data:image/jpeg;base64,' 前缀
+    raw = raw.split(',', 1)[1] if ',' in raw and raw.strip().startswith('data:') else raw
     raw = ''.join(raw.split())                      # 去除换行/空格
+    if max_bytes is not None and len(raw) > 4 * ((max_bytes + 2) // 3):
+        return None                                 # 编码长度已超上限, 不解码直接拒绝
     try:
         binary = base64.b64decode(raw, validate=True)
     except (binascii.Error, ValueError):
@@ -198,6 +199,8 @@ def _validate_upload(file: UploadFile) -> tuple[bytes | None, str]:
     同步读取并校验上传文件
     :return: (原始字节, '') / (None, 'empty') / (None, 'oversize')
     """
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        return None, 'oversize'                 # 已知大小先拒绝, 避免把超大文件读入内存
     raw = file.file.read()
     if not raw:
         return None, 'empty'
@@ -240,7 +243,7 @@ def _register_from_bgr(image, name):
     # 多脸取面积最大的一张; 面积并列时 max 返回检测顺序第一个, 结果确定可测
     x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
     logger.info('选脸完成: name=%s, 选中=%s, 总面积=%d', name, (x, y, w, h), w * h)
-    roi = image[y:y + h, x:x + w]
+    roi = FaceDetection.crop_face_rois(image, [(x, y, w, h)])[0][0]
 
     feature_started = time.perf_counter()
     feature = FaceRecognition.extract_feature(roi)

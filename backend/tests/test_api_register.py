@@ -222,6 +222,18 @@ class TestRegisterFrame:
         assert response.status_code == 422
         assert response.json()['code'] == 422
 
+    def test_oversize_rejected_before_decode(self, api_client, isolated_db, monkeypatch):
+        """>5 MB 的 base64 在 b64decode / 推理前直接返回 1001"""
+        def _unexpected(*args, **kwargs):
+            pytest.fail('超大 base64 不应进入解码/推理')
+
+        monkeypatch.setattr(api_server.base64, 'b64decode', _unexpected)
+        encoded_len = 4 * ((api_server.MAX_UPLOAD_BYTES + 2) // 3) + 4
+        data = _post_frame(api_client, _unique_name(), 'A' * encoded_len)
+
+        assert data['code'] == 1001
+        assert _record_count(isolated_db) == 0
+
 
 # --------------------------------------- 多脸策略(M3-2.5) ---------------------------------------
 class TestMultiFaceStrategy:
@@ -242,3 +254,16 @@ class TestMultiFaceStrategy:
         assert _record_count(isolated_db) == 1
 
 
+# --------------------------------------- OpenAPI 契约 ---------------------------------------
+def test_openapi_contract():
+    schema = api_server.app.openapi()
+
+    assert '/api/face/register/image' in schema['paths']
+    assert '/api/face/register/camera-frame' in schema['paths']
+
+    image_body = schema['paths']['/api/face/register/image']['post'][
+        'requestBody'
+    ]['content']['multipart/form-data']['schema']
+    form_name = image_body['$ref'].rsplit('/', 1)[-1]
+    form_schema = schema['components']['schemas'][form_name]
+    assert form_schema['required'] == ['file', 'name']
