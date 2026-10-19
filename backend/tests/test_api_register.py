@@ -223,3 +223,22 @@ class TestRegisterFrame:
         assert response.json()['code'] == 422
 
 
+# --------------------------------------- 多脸策略(M3-2.5) ---------------------------------------
+class TestMultiFaceStrategy:
+
+    def test_takes_largest_face(self, api_client, isolated_db, multi_face_path, imread):
+        img = imread(multi_face_path)
+        boxes = api_server.app.state.detector.detect_faces(img)
+        assert len(boxes) >= 2, '多人脸样例应至少检出 2 张脸'
+
+        expected = max(boxes, key=lambda box: box[2] * box[3])
+        data = _upload(api_client, multi_face_path, _unique_name())
+
+        assert data['code'] == 0
+        assert data['data']['face_count'] == len(boxes)
+        assert '最大人脸' in data['message']
+        selected = data['data']['selected']
+        assert (selected['x'], selected['y'], selected['w'], selected['h']) == tuple(expected)
+        assert _record_count(isolated_db) == 1
+
+

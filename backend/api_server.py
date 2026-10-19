@@ -237,8 +237,9 @@ def _register_from_bgr(image, name):
     if not faces:
         return 1002, ERR_NO_FACE, None
 
-    # M3-2.1 先取检测顺序第一张; M3-2.5 再升级为「多脸取面积最大」
-    x, y, w, h = faces[0]
+    # 多脸取面积最大的一张; 面积并列时 max 返回检测顺序第一个, 结果确定可测
+    x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
+    logger.info('选脸完成: name=%s, 选中=%s, 总面积=%d', name, (x, y, w, h), w * h)
     roi = image[y:y + h, x:x + w]
 
     feature_started = time.perf_counter()
@@ -270,7 +271,11 @@ def _register_from_bgr(image, name):
         selected=FaceBox(x=x, y=y, w=w, h=h),
         feature_dim=feature.shape[1],
     )
-    return 0, '人脸录入成功', data
+    message = '人脸录入成功'
+    if len(faces) > 1:
+        message = f'人脸录入成功（检测到 {len(faces)} 张人脸，已取最大人脸入库）'
+        logger.info('多脸入库提示: name=%s, face_count=%d, selected=%s', name, len(faces), (x, y, w, h))
+    return 0, message, data
 
 
 # --------------------------------------- 生命周期 ---------------------------------------
