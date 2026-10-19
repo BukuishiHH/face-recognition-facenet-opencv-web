@@ -394,7 +394,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 | 里程碑 | 交付物 | 判定标准 | 状态 |
 |--------|--------|----------|------|
 | M3-1.1 | 应用骨架 | `uvicorn api_server:app` 启动无异常，`/docs` 返回 200 | ✅ 已完成（2026-10-19，真实 `uvicorn` 启动成功，`/docs`、`/openapi.json` 均 200） |
-| M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个公共模型，另含 FastAPI 自动生成的 `HTTPValidationError`） |
+| M3-1.2 | 公共数据模型 | 11 个模型落地，`/openapi.json` 中可见完整 schema | ✅ 已完成（2026-10-19，`components.schemas` 含 11 个公共模型，另含路由泛型实例 `ApiResponse_HealthData_`） |
 | M3-1.3 | 生命周期管理 | 启动加载 Haar、预热 FaceNet、退出 `close()` 数据库 | ✅ 已完成（2026-10-19，`FACENET_WARMUP=1` 预热至 CUDA；`=0` 懒加载，启动/关闭正常） |
 | M3-1.4 | CORS 配置 | 带 `Origin: http://localhost:5173` 的 `OPTIONS` 预检返回 200 且带 `access-control-allow-origin` | ✅ 已完成（2026-10-19，`localhost` / `127.0.0.1` 两种 origin 预检均通过） |
 | M3-1.5 | 统一响应与异常处理 | 业务错误返回 `code != 0`；`422` 与未捕获异常均返回统一信封 | ✅ 已完成（2026-10-19，`/api/health` 返回 `code=0`；`422` 与 `1007` 均为 `{code,message,data}`） |
@@ -422,7 +422,7 @@ uvicorn 主线程 ──创建──► 全局 face_db（sqlite3 连接，创建
 | 全量回归 | `python -m pytest -q` → **54 passed**（`testpaths = tests`，含阶段 2 算法与 CLI 用例） |
 | 真实启动（`FACENET_WARMUP=1`） | 日志：`检测器就绪` → `FaceNet 设备: cuda` → `特征库记录数: 2` → `Application startup complete` |
 | `GET /api/health` | `200`，`code=0`，`device=cuda`，`feature_dim=512`，`library_size=2` |
-| `/docs` / `/openapi.json` | 均 `200`；`components.schemas` 共 12 项（11 个公共模型 + `HTTPValidationError`）；阶段 3-1 仅有 `GET /api/health` 路由 |
+| `/docs` / `/openapi.json` | 均 `200`；`components.schemas` 共 12 项（11 个公共模型 + 路由泛型实例 `ApiResponse_HealthData_`）；阶段 3-1 仅有 `GET /api/health` 路由 |
 | CORS 预检 | `localhost:5173` 与 `127.0.0.1:5173` 的 `OPTIONS` 均 `200`，且回显 `access-control-allow-origin` |
 | 静态资源 | `/static/recognize_121224500.jpg` → `200`、`image/jpeg`、15416 B |
 | 数据库并发 | 20 线程并发写入 20 条记录无异常，数量/姓名一致；20 线程并发删除后剩余 0 条；`close()` 重复调用正常 |
