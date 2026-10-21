@@ -119,6 +119,11 @@ img {
   align-items: start;
 }
 
+/* 栅格内相邻卡片由 gap 控距，抵消 .card + .card 的 margin-top，避免右列下移 */
+.layout-two-col > .card + .card {
+  margin-top: 0;
+}
+
 @media (max-width: 1023px) {
   .layout-two-col {
     grid-template-columns: minmax(0, 1fr);
