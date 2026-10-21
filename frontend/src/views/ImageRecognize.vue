@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import FaceCanvas from '../components/FaceCanvas.vue'
 import {
   DEFAULT_THRESHOLD,
@@ -246,10 +247,12 @@ onBeforeUnmount(() => {
             :min="THRESHOLD_MIN"
             :max="THRESHOLD_MAX"
             step="0.01"
+            aria-describedby="threshold-hint"
             :disabled="submitting"
           >
-          <p class="recognize-hint">
-            默认 {{ DEFAULT_THRESHOLD }}；越高越严格（误认少、漏认多），越低越宽松。调整后需重新识别。
+          <p id="threshold-hint" class="recognize-hint">
+            范围 {{ THRESHOLD_MIN.toFixed(2) }}~{{ THRESHOLD_MAX.toFixed(2) }}，步长 0.01；
+            默认 {{ DEFAULT_THRESHOLD }}。越高越严格（误认少、漏认多），越低越宽松，调整后需重新识别。
           </p>
         </div>
 
@@ -302,6 +305,14 @@ onBeforeUnmount(() => {
           role="status"
         >
           {{ notice }}
+          <RouterLink
+            v-if="result && result.library_empty"
+            id="library-empty-link"
+            class="recognize-notice__link"
+            to="/collect"
+          >
+            去采集人脸
+          </RouterLink>
         </p>
 
         <dl class="recognize-summary" aria-live="polite">
@@ -446,6 +457,14 @@ onBeforeUnmount(() => {
 
 .recognize-alert {
   margin: 0;
+}
+
+.recognize-notice__link {
+  margin-left: 8px;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .recognize-panel {
