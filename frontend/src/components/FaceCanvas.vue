@@ -62,6 +62,14 @@ function draw() {
   })
 }
 
+/** 悬停切换：命中 emit(face)，移出/空白处 emit(null)，便于页面同步取消表格高亮 */
+function setActive(index) {
+  if (index === activeIndex.value) return
+  activeIndex.value = index
+  emit('select', index >= 0 ? props.faces[index] : null)
+  draw()
+}
+
 function onMove(event) {
   const img = imgRef.value
   if (!img || !img.naturalWidth) return
@@ -72,18 +80,11 @@ function onMove(event) {
   const index = props.faces.findIndex(
     ({ box }) => px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h,
   )
-  if (index !== activeIndex.value) {
-    activeIndex.value = index
-    if (index >= 0) emit('select', props.faces[index])
-    draw()
-  }
+  setActive(index)
 }
 
 function onLeave() {
-  if (activeIndex.value !== -1) {
-    activeIndex.value = -1
-    draw()
-  }
+  setActive(-1)
 }
 
 watch(() => [props.faces, props.src], draw, { deep: true })

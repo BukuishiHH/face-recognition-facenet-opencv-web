@@ -29,6 +29,20 @@ let controller = null
 
 const submitting = computed(() => status.value === 'submitting')
 const hasImage = computed(() => !!file.value)
+const activeFace = ref(null) // 鼠标悬停命中的框，用于高亮表格行
+const sortedFaces = computed(() => {
+  if (!result.value) return []
+  // box.x 升序 → box.y 升序 → 原顺序，保证同坐标时排序稳定
+  return result.value.faces
+    .map((face, index) => ({ face, index }))
+    .sort((a, b) =>
+      a.face.box.x - b.face.box.x || a.face.box.y - b.face.box.y || a.index - b.index)
+    .map(({ face }) => face)
+})
+const hitRate = computed(() => {
+  const total = result.value?.total_faces || 0
+  return total ? Math.round((result.value.matched_count / total) * 100) : 0
+})
 const previewMeta = computed(() => {
   if (!file.value) return ''
   const kb = Math.max(1, Math.round(file.value.size / 1024))
@@ -56,6 +70,7 @@ function resetResult() {
   clientMs.value = 0
   errorText.value = ''
   notice.value = ''
+  activeFace.value = null
 }
 
 function clearImage() {
@@ -199,6 +214,7 @@ onBeforeUnmount(() => {
             :src="previewUrl"
             :faces="result.faces"
             class="recognize-preview__canvas"
+            @select="activeFace = $event"
           />
           <img v-else-if="previewUrl" :src="previewUrl" class="recognize-preview__image" alt="待识别图片">
           <p v-else class="recognize-preview__empty">
@@ -310,6 +326,57 @@ onBeforeUnmount(() => {
         <p class="recognize-hint">图片上限 {{ (MAX_UPLOAD_BYTES / 1024 / 1024).toFixed(0) }} MB；识别中按钮会禁用。</p>
       </div>
     </div>
+
+    <!-- 结果表：按 x → y 稳定排序，与 canvas 框数一一对应 -->
+    <section v-if="result" id="recognize-result" class="card recognize-result">
+      <div class="recognize-result__head">
+        <h2 class="card__title">识别结果</h2>
+        <p class="recognize-result__summary muted">
+          {{ result.total_faces }} 张人脸 · 命中 {{ result.matched_count }} / {{ result.total_faces }}（{{ hitRate }}%）
+          · 本次阈值 {{ appliedThreshold.toFixed(2) }}
+        </p>
+      </div>
+
+      <div class="recognize-result__scroll">
+        <table id="result-table" class="table result-table">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">姓名</th>
+              <th scope="col">相似度</th>
+              <th scope="col">状态</th>
+              <th scope="col">坐标 (x, y, w, h)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(face, i) in sortedFaces"
+              :key="`${face.box.x}-${face.box.y}-${i}`"
+              :class="[
+                'result-row',
+                face.matched ? 'result-row--hit' : 'result-row--miss',
+                { 'result-row--active': activeFace === face },
+              ]"
+            >
+              <td>{{ i + 1 }}</td>
+              <td>{{ face.name || '未知' }}</td>
+              <td>{{ face.similarity.toFixed(4) }}</td>
+              <td>
+                <span :class="['badge', face.matched ? 'badge--success' : 'badge--danger']">
+                  {{ face.matched ? '命中' : '未命中' }}
+                </span>
+              </td>
+              <td><code>{{ face.box.x }}, {{ face.box.y }}, {{ face.box.w }}, {{ face.box.h }}</code></td>
+            </tr>
+            <tr v-if="!sortedFaces.length">
+              <td colspan="5" class="recognize-result__empty">未检测到人脸</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="recognize-hint">按 x 从左到右、再按 y 从上到下排序；鼠标悬停图片中的人脸可高亮对应行。</p>
+    </section>
   </section>
 </template>
 
@@ -460,6 +527,58 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+}
+
+.recognize-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recognize-result__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.recognize-result__head .card__title {
+  margin: 0;
+}
+
+.recognize-result__summary {
+  margin: 0;
+  font-size: 13px;
+}
+
+.recognize-result__scroll {
+  overflow-x: auto;
+}
+
+.result-table td code {
+  color: var(--color-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.result-row--hit {
+  background: #f6fdf8;
+}
+
+.result-row--miss {
+  background: #fffafa;
+}
+
+.result-row--active {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.recognize-result__empty {
+  padding: 16px 10px;
+  text-align: center;
+  color: var(--color-muted);
 }
 </style>
 
