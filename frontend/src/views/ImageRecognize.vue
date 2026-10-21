@@ -5,8 +5,10 @@ import {
   MAX_UPLOAD_BYTES,
   THRESHOLD_MAX,
   THRESHOLD_MIN,
+  recognizeByImage,
 } from '../api/face'
 import { compressImage, validateImageFile } from '../utils/image'
+import { toUserMessage } from '../utils/errors'
 
 const threshold = ref(DEFAULT_THRESHOLD)
 const saveResult = ref(false)
@@ -19,6 +21,10 @@ const preparing = ref(false)
 const dragging = ref(false)
 const errorText = ref('')
 const notice = ref('')
+const result = ref(null)
+const appliedThreshold = ref(DEFAULT_THRESHOLD) // 本次结果实际使用的阈值
+const clientMs = ref(0)
+let controller = null
 
 const submitting = computed(() => status.value === 'submitting')
 const hasImage = computed(() => !!file.value)
@@ -45,11 +51,17 @@ function readImageSize(url) {
 }
 
 function resetResult() {
+  result.value = null
+  clientMs.value = 0
   errorText.value = ''
   notice.value = ''
 }
 
 function clearImage() {
+  if (controller) {
+    controller.abort()
+    controller = null
+  }
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
   file.value = null
@@ -75,10 +87,15 @@ async function loadImage(picked) {
     const prepared = await compressImage(picked) // 长边 1600 / q0.85，与 4-2 同一实现
     const nextUrl = URL.createObjectURL(prepared)
     const size = await readImageSize(nextUrl)
+    if (controller) {
+      controller.abort() // 换图时取消上一次识别，旧结果作废
+      controller = null
+    }
     if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
     previewUrl.value = nextUrl
     file.value = prepared
     imageSize.value = size
+    resetResult()
     status.value = 'ready'
   } catch (err) {
     errorText.value = err?.message || '图片处理失败，请换一张图片'
@@ -112,7 +129,49 @@ async function onDrop(event) {
   await loadImage(picked)
 }
 
+async function recognize() {
+  if (!file.value) {
+    errorText.value = '请先选择图片'
+    return
+  }
+  if (controller) controller.abort()
+  const active = new AbortController()
+  controller = active
+  status.value = 'submitting'
+  errorText.value = ''
+  notice.value = ''
+  result.value = null
+  const startedAt = performance.now()
+
+  try {
+    const res = await recognizeByImage(file.value, {
+      threshold: Number(threshold.value),
+      saveResult: saveResult.value,
+      signal: active.signal,
+    })
+    result.value = res.data
+    appliedThreshold.value = Number(threshold.value)
+    clientMs.value = Math.round(performance.now() - startedAt)
+    status.value = 'done'
+    notice.value = res.data.library_empty
+      ? '特征库为空，仅返回人脸位置，未做身份比对'
+      : res.message
+  } catch (err) {
+    if (err.isCanceled) {
+      status.value = file.value ? 'ready' : 'idle'
+      return
+    }
+    errorText.value = toUserMessage(err)
+    status.value = 'error'
+    result.value = null // 1002 等错误必须清空旧结果
+    appliedThreshold.value = Number(threshold.value)
+  } finally {
+    if (controller === active) controller = null
+  }
+}
+
 onBeforeUnmount(() => {
+  if (controller) controller.abort()
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
 })
 </script>
@@ -199,8 +258,13 @@ onBeforeUnmount(() => {
           >
             清除
           </button>
-          <button class="btn" type="button" :disabled="!hasImage || submitting || preparing">
-            {{ preparing ? '处理中…' : '开始识别' }}
+          <button
+            class="btn btn--primary"
+            type="button"
+            :disabled="!hasImage || submitting || preparing"
+            @click="recognize"
+          >
+            {{ submitting ? '识别中…' : preparing ? '处理中…' : '开始识别' }}
           </button>
         </div>
 
@@ -208,26 +272,31 @@ onBeforeUnmount(() => {
         <p v-if="errorText" id="recognize-error" class="alert alert--danger recognize-alert" role="alert">
           {{ errorText }}
         </p>
-        <p v-if="notice" id="recognize-notice" class="alert alert--success recognize-alert" role="status">
+        <p
+          v-if="notice"
+          id="recognize-notice"
+          :class="['alert', result && result.library_empty ? 'alert--warning' : 'alert--success', 'recognize-alert']"
+          role="status"
+        >
           {{ notice }}
         </p>
 
         <dl class="recognize-summary" aria-live="polite">
           <div>
             <dt>人脸数</dt>
-            <dd id="summary-faces">—</dd>
+            <dd id="summary-faces">{{ result ? result.total_faces : '—' }}</dd>
           </div>
           <div>
             <dt>命中数</dt>
-            <dd id="summary-matched">—</dd>
+            <dd id="summary-matched">{{ result ? result.matched_count : '—' }}</dd>
           </div>
           <div>
             <dt>后端耗时</dt>
-            <dd id="summary-elapsed">—</dd>
+            <dd id="summary-elapsed">{{ result ? `${result.elapsed_ms} ms` : '—' }}</dd>
           </div>
           <div>
             <dt>本次阈值</dt>
-            <dd id="summary-threshold">—</dd>
+            <dd id="summary-threshold">{{ result ? appliedThreshold.toFixed(2) : '—' }}</dd>
           </div>
         </dl>
 
