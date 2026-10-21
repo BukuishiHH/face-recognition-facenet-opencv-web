@@ -29,6 +29,7 @@ const {
   activeDeviceId,
   start: startStream,
   stop: stopStream,
+  capture: captureFrame,
 } = camera
 
 const nameLength = computed(() => [...realName.value.trim()].length)
@@ -87,6 +88,28 @@ function stopCamera() {
 function onDeviceChange(event) {
   const deviceId = event.target.value
   if (deviceId) startCamera(deviceId)
+}
+
+/** 截当前帧为静态预览；画面未就绪时不产出黑图 */
+function takePhoto() {
+  const shot = captureFrame({ maxWidth: 640, quality: 0.8 })
+  if (!shot) {
+    errorText.value = '画面尚未就绪，请等待 1 秒后重试'
+    errorCode.value = 0
+    status.value = 'error'
+    return
+  }
+  captured.value = shot
+  errorText.value = ''
+  notice.value = `已拍摄 ${shot.width}×${shot.height} 画面，确认无误后点击「确认入库」`
+  status.value = 'previewing'
+}
+
+function retake() {
+  captured.value = null
+  notice.value = ''
+  errorText.value = ''
+  status.value = cameraReady.value ? 'idle' : 'error'
 }
 
 /** 释放上一次预览的 Blob URL，避免反复选图内存上涨 */
@@ -310,6 +333,10 @@ async function switchMode(next) {
             </button>
             <button v-else class="btn btn--ghost" type="button" :disabled="submitting" @click="stopCamera()">
               关闭摄像头
+            </button>
+            <button class="btn" type="button" :disabled="!cameraReady || submitting" @click="takePhoto">拍照</button>
+            <button v-if="captured" class="btn btn--ghost" type="button" :disabled="submitting" @click="retake">
+              重拍
             </button>
             <select
               v-if="devices.length > 1"
