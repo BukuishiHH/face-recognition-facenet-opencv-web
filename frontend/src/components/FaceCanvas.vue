@@ -1,6 +1,7 @@
 <!-- 人脸框覆盖层：坐标基于原图像素，绘制时按显示宽度等比缩放（docs/04-03 4.4） -->
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { drawFaceBoxes } from '../utils/draw'
 
 const props = defineProps({
   src: { type: String, default: '' },
@@ -35,30 +36,9 @@ function draw() {
   ctx.clearRect(0, 0, rect.width, rect.height)
 
   const scale = rect.width / img.naturalWidth // wrap 完全贴合 img，宽高比一致
-  props.faces.forEach((face, index) => {
-    const { x, y, w, h } = face.box
-    const color = face.matched ? '#16a34a' : '#dc2626'
-    const left = x * scale
-    const top = y * scale
-    const width = w * scale
-    const height = h * scale
-    ctx.lineWidth = activeIndex.value === index ? 4 : 2
-    ctx.strokeStyle = color
-    ctx.strokeRect(left, top, width, height)
-
-    if (!props.showLabels) return
-    const label = face.matched
-      ? `${face.name} ${(face.similarity * 100).toFixed(1)}%`
-      : `未知 ${(face.similarity * 100).toFixed(1)}%`
-    ctx.font = '13px system-ui, -apple-system, "Segoe UI", sans-serif'
-    const tagW = ctx.measureText(label).width + 8
-    const tagH = 20
-    const tagTop = top - tagH >= 0 ? top - tagH : top
-    ctx.fillStyle = color
-    ctx.fillRect(left, tagTop, tagW, tagH)
-    ctx.fillStyle = '#fff'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(label, left + 4, tagTop + tagH / 2)
+  drawFaceBoxes(ctx, props.faces, scale, {
+    activeIndex: activeIndex.value,
+    showLabels: props.showLabels,
   })
 }
 
