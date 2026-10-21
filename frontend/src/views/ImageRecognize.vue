@@ -9,6 +9,7 @@ import {
   THRESHOLD_MIN,
   recognizeByImage,
 } from '../api/face'
+import { resolveStaticUrl } from '../api/http'
 import { compressImage, validateImageFile } from '../utils/image'
 import { toUserMessage } from '../utils/errors'
 
@@ -25,6 +26,7 @@ const errorText = ref('')
 const notice = ref('')
 const result = ref(null)
 const appliedThreshold = ref(DEFAULT_THRESHOLD) // 本次结果实际使用的阈值
+const appliedSaveResult = ref(false) // 本次是否勾选了「保存标注图」
 const clientMs = ref(0)
 let controller = null
 
@@ -44,6 +46,8 @@ const hitRate = computed(() => {
   const total = result.value?.total_faces || 0
   return total ? Math.round((result.value.matched_count / total) * 100) : 0
 })
+// /static 不在 /api 下：必须用 resolveStaticUrl 拼 origin；绝对地址原样透传
+const annotatedUrl = computed(() => resolveStaticUrl(result.value?.result_image_url))
 const previewMeta = computed(() => {
   if (!file.value) return ''
   const kb = Math.max(1, Math.round(file.value.size / 1024))
@@ -69,6 +73,7 @@ function readImageSize(url) {
 function resetResult() {
   result.value = null
   clientMs.value = 0
+  appliedSaveResult.value = false
   errorText.value = ''
   notice.value = ''
   activeFace.value = null
@@ -168,6 +173,7 @@ async function recognize() {
     })
     result.value = res.data
     appliedThreshold.value = Number(threshold.value)
+    appliedSaveResult.value = saveResult.value
     clientMs.value = Math.round(performance.now() - startedAt)
     status.value = 'done'
     notice.value = res.data.library_empty
@@ -329,6 +335,10 @@ onBeforeUnmount(() => {
             <dd id="summary-elapsed">{{ result ? `${result.elapsed_ms} ms` : '—' }}</dd>
           </div>
           <div>
+            <dt>前端往返</dt>
+            <dd id="summary-client">{{ result ? `${clientMs} ms` : '—' }}</dd>
+          </div>
+          <div>
             <dt>本次阈值</dt>
             <dd id="summary-threshold">{{ result ? appliedThreshold.toFixed(2) : '—' }}</dd>
           </div>
@@ -387,6 +397,14 @@ onBeforeUnmount(() => {
       </div>
 
       <p class="recognize-hint">按 x 从左到右、再按 y 从上到下排序；鼠标悬停图片中的人脸可高亮对应行。</p>
+
+      <p v-if="annotatedUrl" class="recognize-annotated">
+        后端标注图：
+        <a id="annotated-link" :href="annotatedUrl" target="_blank" rel="noopener">{{ annotatedUrl }}</a>
+      </p>
+      <p v-else-if="appliedSaveResult" id="annotated-missing" class="recognize-hint">
+        已请求保存标注图，但后端未返回地址（可能未配置 RESULT_DIR 或写入失败）；可先截图留档。
+      </p>
     </section>
   </section>
 </template>
@@ -537,6 +555,11 @@ onBeforeUnmount(() => {
   gap: 2px;
 }
 
+/* 结果项为奇数时最后一项占满整行，避免 5 项留半格 */
+.recognize-summary div:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .recognize-summary dt {
   color: var(--color-muted);
   font-size: 12px;
@@ -598,6 +621,16 @@ onBeforeUnmount(() => {
   padding: 16px 10px;
   text-align: center;
   color: var(--color-muted);
+}
+
+.recognize-annotated {
+  margin: 0;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.recognize-annotated a {
+  color: var(--color-primary);
 }
 </style>
 
