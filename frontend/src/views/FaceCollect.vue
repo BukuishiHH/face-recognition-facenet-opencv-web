@@ -62,6 +62,7 @@ const previewMeta = computed(() => {
   if (captured.value) return `已拍摄 ${captured.value.width}×${captured.value.height}`
   return ''
 })
+const noticeKind = computed(() => (receipt.value ? 'alert--success' : ''))
 
 /** 失焦 / IME 结束后去掉首尾空格；拼音输入过程中不打断候选词 */
 function normalizeName() {
@@ -409,7 +410,28 @@ async function switchMode(next) {
       <span>{{ errorText }}</span>
       <RouterLink v-if="errorCode === 1004" class="collect-alert__link" to="/library">去特征库管理</RouterLink>
     </div>
-    <div v-if="notice" class="alert collect-alert" role="status">{{ notice }}</div>
+    <div v-if="notice" class="alert collect-alert" :class="noticeKind" role="status">{{ notice }}</div>
+
+    <div v-if="receipt" class="card collect-receipt">
+      <div class="collect-receipt__head">
+        <h2 class="card__title">入库回执</h2>
+        <span class="badge badge--success">已入库</span>
+      </div>
+      <dl class="collect-receipt__list">
+        <dt>姓名</dt>
+        <dd>{{ receipt.name }}</dd>
+        <dt>记录 ID</dt>
+        <dd><code>{{ receipt.record_id }}</code></dd>
+        <dt>人脸数</dt>
+        <dd>{{ receipt.face_count }}</dd>
+        <dt>特征维度</dt>
+        <dd>{{ receipt.feature_dim }} 维</dd>
+      </dl>
+      <p v-if="receipt.face_count > 1" class="alert alert--warning">
+        图中存在 {{ receipt.face_count }} 张人脸，后端已选面积最大的 1 张入库，建议使用单人正面照重新采集以提高识别率。
+      </p>
+      <RouterLink class="btn btn--ghost collect-receipt__link" to="/library">查看特征库</RouterLink>
+    </div>
   </section>
 </template>
 
@@ -525,6 +547,43 @@ async function switchMode(next) {
 
 .collect-alert__link {
   font-weight: 600;
+}
+
+.collect-receipt {
+  margin-top: 16px;
+}
+
+.collect-receipt__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.collect-receipt__head .card__title {
+  margin: 0;
+}
+
+.collect-receipt__list {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 16px 0;
+  font-size: 13px;
+}
+
+.collect-receipt__list dt {
+  color: var(--color-muted);
+}
+
+.collect-receipt__list dd {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.collect-receipt__link {
+  margin-top: 4px;
 }
 
 .collect-hint {
