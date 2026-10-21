@@ -1,0 +1,22 @@
+{
+  "name": "face-recognition-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "人脸检测识别系统 · Vue3 Web 前端（FaceNet + OpenCV）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.4.38"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.3",
+    "vite": "^5.4.3"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}
