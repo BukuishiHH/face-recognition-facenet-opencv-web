@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { MAX_NAME_LEN, MAX_UPLOAD_BYTES, registerByFrame, registerByImage } from '../api/face'
 import { useCamera } from '../composables/useCamera'
 import { toUserMessage } from '../utils/errors'
@@ -404,7 +405,10 @@ async function switchMode(next) {
       </div>
     </div>
 
-    <div v-if="errorText" class="alert alert--danger collect-alert" role="alert">{{ errorText }}</div>
+    <div v-if="errorText" class="alert alert--danger collect-alert" role="alert">
+      <span>{{ errorText }}</span>
+      <RouterLink v-if="errorCode === 1004" class="collect-alert__link" to="/library">去特征库管理</RouterLink>
+    </div>
     <div v-if="notice" class="alert collect-alert" role="status">{{ notice }}</div>
   </section>
 </template>
@@ -512,7 +516,15 @@ async function switchMode(next) {
 }
 
 .collect-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
   margin-top: 12px;
+}
+
+.collect-alert__link {
+  font-weight: 600;
 }
 
 .collect-hint {
