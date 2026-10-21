@@ -34,6 +34,7 @@ const {
 
 const nameLength = computed(() => [...realName.value.trim()].length)
 const nameTooLong = computed(() => nameLength.value > MAX_NAME_LEN)
+const nameBlank = computed(() => realName.value.length > 0 && nameLength.value === 0)
 const submitting = computed(() => status.value === 'submitting')
 const cameraReady = computed(() => cameraStatus.value === 'ready')
 const cameraHint = computed(() => {
@@ -128,6 +129,7 @@ async function onFileChange(event) {
   if (!file) return
   const invalid = validateImageFile(file, MAX_UPLOAD_BYTES)
   if (invalid) {
+    clearSelected() // 丢弃上一次的有效图，避免误提交旧图
     errorText.value = invalid
     errorCode.value = 0
     status.value = 'error'
@@ -136,6 +138,7 @@ async function onFileChange(event) {
   try {
     selectedFile.value = await compressImage(file)
   } catch (error) {
+    clearSelected()
     errorText.value = error.message || '图片处理失败，请重试'
     errorCode.value = 0
     status.value = 'error'
@@ -175,11 +178,13 @@ async function submit() {
   }
   if (mode.value === 'upload' && !selectedFile.value) {
     errorText.value = '请先选择图片'
+    errorCode.value = 0
     status.value = 'error'
     return
   }
   if (mode.value === 'camera' && !captured.value) {
     errorText.value = '请先拍照'
+    errorCode.value = 0
     status.value = 'error'
     return
   }
@@ -382,6 +387,7 @@ async function switchMode(next) {
             {{ nameLength }} / {{ MAX_NAME_LEN }} 字符
             <span v-if="nameTooLong">（超出上限，后端将返回 1001）</span>
           </p>
+          <p v-if="nameBlank" class="collect-hint collect-hint--error">姓名不能只包含空格</p>
           <p class="muted">姓名为特征库唯一键，与其已有记录重名时会提示先删除旧记录。</p>
         </div>
 
