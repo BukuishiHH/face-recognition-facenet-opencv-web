@@ -108,11 +108,16 @@ function takePhoto() {
   status.value = 'previewing'
 }
 
-function retake() {
+async function retake() {
   captured.value = null
   notice.value = ''
   errorText.value = ''
-  status.value = cameraReady.value ? 'idle' : 'error'
+  // 页面隐藏时轨道已被释放，重拍需要先恢复实时预览
+  if (!cameraReady.value) {
+    await startCamera()
+    return
+  }
+  status.value = 'idle'
 }
 
 /** 释放上一次预览的 Blob URL，避免反复选图内存上涨 */
