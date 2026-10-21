@@ -1,6 +1,11 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { DEFAULT_THRESHOLD, recognizeByFrame } from '../api/face'
+import {
+  DEFAULT_THRESHOLD,
+  THRESHOLD_MAX,
+  THRESHOLD_MIN,
+  recognizeByFrame,
+} from '../api/face'
 import { useCamera } from '../composables/useCamera'
 import { drawFaceBoxes } from '../utils/draw'
 import { toUserMessage } from '../utils/errors'
@@ -16,6 +21,7 @@ const overlayRef = ref(null)
 const running = ref(false) // 摄像头已开启且识别循环运行中
 const paused = ref(false) // 暂停：只停排程，保留预览与最后一帧的框
 const starting = ref(false)
+const threshold = ref(DEFAULT_THRESHOLD) // 滑块 v-model.number，下一帧即生效
 const intervalMs = ref(BASE_INTERVAL) // 当前采样间隔（400 / 800）
 const faces = ref([]) // 最近一帧的全部人脸
 const frameSize = ref({ width: 0, height: 0 }) // 最近一次送检帧的像素尺寸（不是 videoWidth）
@@ -23,10 +29,33 @@ const updatedAt = ref('')
 const lastMessage = ref('')
 const errorText = ref('')
 const stats = ref({ frames: 0, dropped: 0, errors: 0, latencySum: 0, startedAt: 0 })
+const nowTick = ref(Date.now()) // 1 s 心跳驱动的「当前时间」，用于计算运行时长
 
 let timer = null
 let controller = null
 let resizeObserver = null
+let uptimeTimer = null
+let pausedSince = 0 // 本次暂停的起点（ms）
+const pausedTotal = ref(0) // 累计暂停时长（ms），运行时长里要扣掉
+
+const avgLatency = computed(() =>
+  stats.value.frames ? Math.round(stats.value.latencySum / stats.value.frames) : 0,
+)
+const uptime = computed(() => {
+  if (!stats.value.startedAt) return '00:00'
+  const pausedNow = pausedSince ? nowTick.value - pausedSince : 0
+  const ms = Math.max(0, nowTick.value - stats.value.startedAt - pausedTotal.value - pausedNow)
+  const sec = Math.floor(ms / 1000)
+  return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`
+})
+const messageTone = computed(() => {
+  const text = lastMessage.value
+  if (errorText.value) return 'danger'
+  if (!text) return 'muted'
+  if (text.includes('丢弃') || text.includes('超时')) return 'warn'
+  if (text.includes('未检测到') || text.includes('特征库为空')) return 'muted'
+  return 'ok'
+})
 
 const stateText = computed(() => {
   if (errorText.value) return '错误'
@@ -59,6 +88,8 @@ function failLoop(err) {
   const message = toUserMessage(err)
   running.value = false
   paused.value = false
+  foldPause()
+  nowTick.value = Date.now()
   clearTimeout(timer)
   timer = null
   if (controller) {
@@ -86,7 +117,7 @@ async function tick() {
   const startedAt = performance.now()
   try {
     const res = await recognizeByFrame(shot.dataUrl, {
-      threshold: DEFAULT_THRESHOLD,
+      threshold: Number(threshold.value),
       signal: controller.signal,
     })
     const rtt = performance.now() - startedAt
@@ -100,13 +131,17 @@ async function tick() {
       ? '特征库为空，请先到「人脸采集」录入'
       : res.message
     updatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    nowTick.value = Date.now()
     drawOverlay()
   } catch (err) {
     if (err.isCanceled) return
     if (err.code === 1002) {
-      // 本帧无脸：清框，不当错误
+      // 本帧无脸：清框，不当错误，但仍是「已处理」的一帧（docs/04-04 4.7）
+      stats.value.frames += 1
+      stats.value.latencySum += performance.now() - startedAt
       faces.value = []
       lastMessage.value = '当前画面未检测到人脸'
+      nowTick.value = Date.now()
       drawOverlay()
     } else if (err.code === 1008 || err.code === -2) {
       // 1008 推理繁忙 / -2 超时：主动丢帧，下一拍继续，不重试当前帧
@@ -172,6 +207,9 @@ async function start() {
   updatedAt.value = ''
   intervalMs.value = BASE_INTERVAL
   stats.value = { frames: 0, dropped: 0, errors: 0, latencySum: 0, startedAt: Date.now() }
+  pausedSince = 0
+  pausedTotal.value = 0
+  nowTick.value = Date.now()
   running.value = true
   starting.value = false
   lastMessage.value = '已开启，正在识别…'
@@ -182,6 +220,8 @@ function stop() {
   running.value = false
   paused.value = false
   starting.value = false
+  foldPause()
+  nowTick.value = Date.now() // 冻结运行时长，停止后仍可回看
   clearTimeout(timer)
   timer = null
   if (controller) {
@@ -195,6 +235,13 @@ function stop() {
   clearOverlay()
 }
 
+/** 结束当前暂停区间，并把时长并入 pausedTotal（运行时长要扣掉） */
+function foldPause() {
+  if (!pausedSince) return
+  pausedTotal.value += Date.now() - pausedSince
+  pausedSince = 0
+}
+
 /**
  * 暂停只停排程，不 abort 在途请求：让最后一帧正常画完，避免「有框但对不上画面」。
  * auto=true 用于标签页隐藏时自动暂停。
@@ -202,14 +249,18 @@ function stop() {
 function pause(auto = false) {
   if (!running.value || paused.value) return
   paused.value = true
+  pausedSince = Date.now()
   clearTimeout(timer)
   timer = null
+  nowTick.value = Date.now()
   lastMessage.value = auto ? '页面已隐藏，自动暂停采样' : '已暂停采样，画面与框保留'
 }
 
 function resume() {
   if (!running.value || !paused.value) return
   paused.value = false
+  foldPause()
+  nowTick.value = Date.now()
   lastMessage.value = '已继续，正在识别…'
   scheduleNext(0) // 立即补一拍，无需等满一个间隔
 }
@@ -221,6 +272,10 @@ function onVisibilityChange() {
 onMounted(() => {
   // 切到后台时浏览器会节流定时器，提前暂停可少发无用请求（不停流，切回不黑屏）
   document.addEventListener('visibilitychange', onVisibilityChange)
+  // 运行时长需要独立的 1 s 心跳；停止后不再刷新，数字自然冻结
+  uptimeTimer = setInterval(() => {
+    if (running.value || paused.value) nowTick.value = Date.now()
+  }, 1000)
   // 窗口缩放 / 侧栏折叠时重绘，避免框与画面错位
   if (videoRef.value && typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => drawOverlay())
@@ -229,6 +284,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  clearInterval(uptimeTimer)
+  uptimeTimer = null
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -277,6 +334,26 @@ if (import.meta.hot) {
       <div class="card realtime-panel">
         <h2 class="card__title">识别控制</h2>
 
+        <div class="field">
+          <label class="field__label" for="realtime-threshold">
+            相似度阈值 <strong id="realtime-threshold-value">{{ Number(threshold).toFixed(2) }}</strong>
+          </label>
+          <input
+            id="realtime-threshold"
+            v-model.number="threshold"
+            class="realtime-range"
+            type="range"
+            :min="THRESHOLD_MIN"
+            :max="THRESHOLD_MAX"
+            step="0.05"
+            aria-describedby="realtime-threshold-hint"
+          >
+          <p id="realtime-threshold-hint" class="realtime-hint">
+            范围 {{ THRESHOLD_MIN.toFixed(2) }}~{{ THRESHOLD_MAX.toFixed(2) }}，步长 0.05；
+            调整后无需重启，下一帧即按新阈值请求（暂停时修改，继续后生效）。
+          </p>
+        </div>
+
         <div class="realtime-actions">
           <button
             v-if="!running"
@@ -299,7 +376,7 @@ if (import.meta.hot) {
         <div v-if="errorText" id="realtime-error" class="alert alert--danger realtime-alert">
           {{ errorText }}
         </div>
-        <p v-else-if="lastMessage" id="realtime-message" class="muted realtime-alert">
+        <p v-else-if="lastMessage" id="realtime-message" class="realtime-alert realtime-message" :class="`realtime-message--${messageTone}`">
           {{ lastMessage }}
         </p>
 
@@ -309,8 +386,20 @@ if (import.meta.hot) {
             <dd><span id="realtime-interval">{{ intervalMs }}</span> ms</dd>
           </div>
           <div class="realtime-metrics__item">
+            <dt>已处理</dt>
+            <dd id="realtime-frames">{{ stats.frames }}</dd>
+          </div>
+          <div class="realtime-metrics__item">
             <dt>已丢弃</dt>
             <dd id="realtime-dropped">{{ stats.dropped }}</dd>
+          </div>
+          <div class="realtime-metrics__item">
+            <dt>平均延迟</dt>
+            <dd><span id="realtime-latency">{{ avgLatency }}</span> ms</dd>
+          </div>
+          <div class="realtime-metrics__item">
+            <dt>运行时长</dt>
+            <dd id="realtime-uptime">{{ uptime }}</dd>
           </div>
         </dl>
 
@@ -318,6 +407,41 @@ if (import.meta.hot) {
           开启后页面每 <strong>{{ intervalMs }} ms</strong> 采样一帧发送到
           <code>POST /api/recognize/frame</code>；单帧往返超过 800 ms 会自动降频，
           后端忙（<code>1008</code>）或超时（<code>-2</code>）直接丢帧，不重试。
+          已处理 = 成功返回的帧（含无脸），已丢弃 = 这两种失败；平均延迟只统计已处理帧。
+        </p>
+      </div>
+    </div>
+
+    <!-- 当前帧结果表：整行宽度，避免挤压右侧控制面板 -->
+    <div class="card realtime-faces">
+      <h2 class="card__title">当前帧人脸</h2>
+      <div class="realtime-faces__scroll">
+        <table v-if="faces.length" id="realtime-faces" class="table realtime-table">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">姓名</th>
+              <th scope="col">相似度</th>
+              <th scope="col">状态</th>
+              <th scope="col">坐标 (x, y, w, h)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(face, i) in faces" :key="`${face.box.x}-${face.box.y}-${i}`">
+              <td>{{ i + 1 }}</td>
+              <td>{{ face.matched ? face.name : '未知' }}</td>
+              <td>{{ (face.similarity * 100).toFixed(1) }}%</td>
+              <td>
+                <span :class="['badge', face.matched ? 'badge--success' : 'badge--danger']">
+                  {{ face.matched ? '命中' : '未命中' }}
+                </span>
+              </td>
+              <td><code>{{ face.box.x }}, {{ face.box.y }}, {{ face.box.w }}, {{ face.box.h }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else id="realtime-faces-empty" class="realtime-faces__empty">
+          {{ running ? '最近一帧未检测到人脸' : '开启摄像头后显示最近一帧的人脸' }}
         </p>
       </div>
     </div>
@@ -395,6 +519,11 @@ if (import.meta.hot) {
   margin: 0;
 }
 
+/* 5 项：前 4 项两列，运行时长占满一行，避免最后留半格 */
+.realtime-metrics__item:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .realtime-metrics__item {
   padding: 8px 10px;
   border: 1px solid var(--color-border);
@@ -448,6 +577,54 @@ if (import.meta.hot) {
 
 .realtime-alert {
   margin: 0;
+}
+
+.realtime-message--ok {
+  color: var(--color-success);
+}
+
+.realtime-message--warn {
+  color: var(--color-warning);
+}
+
+.realtime-message--muted {
+  color: var(--color-muted);
+}
+
+.realtime-message--danger {
+  color: var(--color-danger);
+}
+
+.realtime-range {
+  width: 100%;
+  accent-color: var(--color-primary);
+}
+
+.realtime-faces {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.realtime-faces .card__title {
+  margin: 0;
+}
+
+.realtime-faces__scroll {
+  overflow-x: auto;
+}
+
+.realtime-table td code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.realtime-faces__empty {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--color-muted);
+  font-size: 13px;
 }
 
 .realtime-hint {
