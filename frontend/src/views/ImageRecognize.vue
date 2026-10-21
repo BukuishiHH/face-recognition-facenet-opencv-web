@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
+import FaceCanvas from '../components/FaceCanvas.vue'
 import {
   DEFAULT_THRESHOLD,
   MAX_UPLOAD_BYTES,
@@ -193,7 +194,13 @@ onBeforeUnmount(() => {
           @dragleave="onDragLeave"
           @drop="onDrop"
         >
-          <img v-if="previewUrl" :src="previewUrl" class="recognize-preview__image" alt="待识别图片">
+          <FaceCanvas
+            v-if="previewUrl && result"
+            :src="previewUrl"
+            :faces="result.faces"
+            class="recognize-preview__canvas"
+          />
+          <img v-else-if="previewUrl" :src="previewUrl" class="recognize-preview__image" alt="待识别图片">
           <p v-else class="recognize-preview__empty">
             <template v-if="preparing">图片处理中…</template>
             <template v-else>
@@ -345,6 +352,10 @@ onBeforeUnmount(() => {
   height: auto;
   margin: 0 auto;
   object-fit: contain;
+}
+
+.recognize-preview__canvas {
+  max-width: 100%;
 }
 
 .recognize-preview__empty {
