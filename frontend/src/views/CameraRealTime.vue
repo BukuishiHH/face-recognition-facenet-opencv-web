@@ -14,6 +14,7 @@ const { videoRef } = camera
 const overlayRef = ref(null)
 
 const running = ref(false) // 摄像头已开启且识别循环运行中
+const paused = ref(false) // 暂停：只停排程，保留预览与最后一帧的框
 const starting = ref(false)
 const intervalMs = ref(BASE_INTERVAL) // 当前采样间隔（400 / 800）
 const faces = ref([]) // 最近一帧的全部人脸
@@ -30,11 +31,13 @@ let resizeObserver = null
 const stateText = computed(() => {
   if (errorText.value) return '错误'
   if (starting.value) return '开启中'
+  if (paused.value) return '⏸ 已暂停'
   if (running.value) return '● 运行中'
   return '○ 未开启'
 })
 const stateTone = computed(() => {
   if (errorText.value) return 'danger'
+  if (paused.value) return 'warn'
   if (running.value) return 'ok'
   return 'muted'
 })
@@ -47,7 +50,7 @@ const frameMeta = computed(() => {
 function scheduleNext(delay = intervalMs.value) {
   clearTimeout(timer)
   timer = null
-  if (!running.value) return
+  if (!running.value || paused.value) return
   timer = setTimeout(tick, delay)
 }
 
@@ -55,6 +58,7 @@ function scheduleNext(delay = intervalMs.value) {
 function failLoop(err) {
   const message = toUserMessage(err)
   running.value = false
+  paused.value = false
   clearTimeout(timer)
   timer = null
   if (controller) {
@@ -70,7 +74,7 @@ function failLoop(err) {
 
 /** 单飞节拍：上一帧请求完成（含失败）后才排下一帧 */
 async function tick() {
-  if (!running.value) return
+  if (!running.value || paused.value) return
   const shot = camera.capture({ maxWidth: 640, quality: 0.8 })
   if (!shot) {
     scheduleNext(200) // 首帧未就绪，稍后再试
@@ -116,7 +120,7 @@ async function tick() {
     }
   } finally {
     controller = null
-    if (running.value) scheduleNext()
+    if (running.value && !paused.value) scheduleNext()
   }
 }
 
@@ -153,6 +157,7 @@ function clearOverlay() {
 async function start() {
   if (starting.value || running.value) return
   starting.value = true
+  paused.value = false
   errorText.value = ''
   lastMessage.value = '正在请求摄像头权限…'
   const ok = await camera.start()
@@ -175,6 +180,7 @@ async function start() {
 
 function stop() {
   running.value = false
+  paused.value = false
   starting.value = false
   clearTimeout(timer)
   timer = null
@@ -189,7 +195,32 @@ function stop() {
   clearOverlay()
 }
 
+/**
+ * 暂停只停排程，不 abort 在途请求：让最后一帧正常画完，避免「有框但对不上画面」。
+ * auto=true 用于标签页隐藏时自动暂停。
+ */
+function pause(auto = false) {
+  if (!running.value || paused.value) return
+  paused.value = true
+  clearTimeout(timer)
+  timer = null
+  lastMessage.value = auto ? '页面已隐藏，自动暂停采样' : '已暂停采样，画面与框保留'
+}
+
+function resume() {
+  if (!running.value || !paused.value) return
+  paused.value = false
+  lastMessage.value = '已继续，正在识别…'
+  scheduleNext(0) // 立即补一拍，无需等满一个间隔
+}
+
+function onVisibilityChange() {
+  if (document.hidden && running.value && !paused.value) pause(true)
+}
+
 onMounted(() => {
+  // 切到后台时浏览器会节流定时器，提前暂停可少发无用请求（不停流，切回不黑屏）
+  document.addEventListener('visibilitychange', onVisibilityChange)
   // 窗口缩放 / 侧栏折叠时重绘，避免框与画面错位
   if (videoRef.value && typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => drawOverlay())
@@ -197,6 +228,7 @@ onMounted(() => {
   }
 })
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -255,7 +287,13 @@ if (import.meta.hot) {
           >
             {{ starting ? '正在开启…' : '开启摄像头' }}
           </button>
-          <button v-else id="realtime-stop" class="btn btn--danger" @click="stop">停止</button>
+          <template v-else>
+            <button v-if="!paused" id="realtime-pause" class="btn btn--ghost" @click="pause()">
+              暂停
+            </button>
+            <button v-else id="realtime-resume" class="btn" @click="resume">继续</button>
+            <button id="realtime-stop" class="btn btn--danger" @click="stop">停止</button>
+          </template>
         </div>
 
         <div v-if="errorText" id="realtime-error" class="alert alert--danger realtime-alert">
@@ -382,6 +420,10 @@ if (import.meta.hot) {
 
 .realtime-state--muted {
   color: var(--color-muted);
+}
+
+.realtime-state--warn {
+  color: var(--color-warning);
 }
 
 .realtime-state--danger {
