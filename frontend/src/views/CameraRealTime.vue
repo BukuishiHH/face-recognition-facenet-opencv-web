@@ -6,6 +6,8 @@ import { drawFaceBoxes } from '../utils/draw'
 import { toUserMessage } from '../utils/errors'
 
 const BASE_INTERVAL = 400 // 基础采样间隔（ms）
+const MAX_INTERVAL = 800 // 慢链路上限：再慢说明后端过载，继续 2.5 QPS 只会加剧排队
+const SLOW_RTT = 800 // 单次往返超过此值判定为慢，自动降频
 
 const camera = useCamera({ width: 640, height: 480 })
 const { videoRef } = camera
@@ -13,11 +15,13 @@ const overlayRef = ref(null)
 
 const running = ref(false) // 摄像头已开启且识别循环运行中
 const starting = ref(false)
+const intervalMs = ref(BASE_INTERVAL) // 当前采样间隔（400 / 800）
 const faces = ref([]) // 最近一帧的全部人脸
 const frameSize = ref({ width: 0, height: 0 }) // 最近一次送检帧的像素尺寸（不是 videoWidth）
 const updatedAt = ref('')
 const lastMessage = ref('')
 const errorText = ref('')
+const stats = ref({ frames: 0, dropped: 0, errors: 0, latencySum: 0, startedAt: 0 })
 
 let timer = null
 let controller = null
@@ -40,11 +44,28 @@ const frameMeta = computed(() => {
 })
 
 /** 唯一排程出口：清旧 timer 再排新，避免多处 setTimeout 泄漏 */
-function scheduleNext(delay = BASE_INTERVAL) {
+function scheduleNext(delay = intervalMs.value) {
   clearTimeout(timer)
   timer = null
   if (!running.value) return
   timer = setTimeout(tick, delay)
+}
+
+/** 终止级错误：继续轮询只会刷屏，必须停循环并提示用户手动恢复 */
+function failLoop(err) {
+  const message = toUserMessage(err)
+  running.value = false
+  clearTimeout(timer)
+  timer = null
+  if (controller) {
+    controller.abort()
+    controller = null
+  }
+  camera.stop()
+  faces.value = []
+  lastMessage.value = ''
+  errorText.value = message
+  clearOverlay()
 }
 
 /** 单飞节拍：上一帧请求完成（含失败）后才排下一帧 */
@@ -58,12 +79,18 @@ async function tick() {
   frameSize.value = { width: shot.width, height: shot.height }
 
   controller = new AbortController()
+  const startedAt = performance.now()
   try {
     const res = await recognizeByFrame(shot.dataUrl, {
       threshold: DEFAULT_THRESHOLD,
       signal: controller.signal,
     })
+    const rtt = performance.now() - startedAt
     if (!running.value) return // 请求返回时已被停止
+    stats.value.frames += 1
+    stats.value.latencySum += rtt
+    // 慢链路自动降频，恢复后再回到基准间隔
+    intervalMs.value = rtt > SLOW_RTT ? MAX_INTERVAL : BASE_INTERVAL
     faces.value = res.data.faces
     lastMessage.value = res.data.library_empty
       ? '特征库为空，请先到「人脸采集」录入'
@@ -77,7 +104,14 @@ async function tick() {
       faces.value = []
       lastMessage.value = '当前画面未检测到人脸'
       drawOverlay()
+    } else if (err.code === 1008 || err.code === -2) {
+      // 1008 推理繁忙 / -2 超时：主动丢帧，下一拍继续，不重试当前帧
+      stats.value.dropped += 1
+      lastMessage.value = err.code === 1008 ? '推理繁忙，已丢弃本帧' : '本帧超时，已丢弃'
+    } else if (err.code === -1 || err.code === 1001 || err.code === 1007) {
+      failLoop(err)
     } else {
+      stats.value.errors += 1
       lastMessage.value = toUserMessage(err)
     }
   } finally {
@@ -131,6 +165,8 @@ async function start() {
   faces.value = []
   frameSize.value = { width: 0, height: 0 }
   updatedAt.value = ''
+  intervalMs.value = BASE_INTERVAL
+  stats.value = { frames: 0, dropped: 0, errors: 0, latencySum: 0, startedAt: Date.now() }
   running.value = true
   starting.value = false
   lastMessage.value = '已开启，正在识别…'
@@ -229,9 +265,21 @@ if (import.meta.hot) {
           {{ lastMessage }}
         </p>
 
+        <dl id="realtime-metrics" class="realtime-metrics">
+          <div class="realtime-metrics__item">
+            <dt>采样间隔</dt>
+            <dd><span id="realtime-interval">{{ intervalMs }}</span> ms</dd>
+          </div>
+          <div class="realtime-metrics__item">
+            <dt>已丢弃</dt>
+            <dd id="realtime-dropped">{{ stats.dropped }}</dd>
+          </div>
+        </dl>
+
         <p class="realtime-hint">
-          开启后页面每 <strong>400 ms</strong> 采样一帧发送到
-          <code>POST /api/recognize/frame</code>；离开页面或热更新时自动释放摄像头。
+          开启后页面每 <strong>{{ intervalMs }} ms</strong> 采样一帧发送到
+          <code>POST /api/recognize/frame</code>；单帧往返超过 800 ms 会自动降频，
+          后端忙（<code>1008</code>）或超时（<code>-2</code>）直接丢帧，不重试。
         </p>
       </div>
     </div>
@@ -300,6 +348,32 @@ if (import.meta.hot) {
   margin-left: 6px;
   color: var(--color-muted);
   font-size: 12px;
+}
+
+.realtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.realtime-metrics__item {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+}
+
+.realtime-metrics dt {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.realtime-metrics dd {
+  margin: 2px 0 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .realtime-state--ok {
