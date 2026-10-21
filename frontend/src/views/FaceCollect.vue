@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { MAX_NAME_LEN, MAX_UPLOAD_BYTES, registerByFrame, registerByImage } from '../api/face'
 import { useCamera } from '../composables/useCamera'
@@ -248,6 +248,31 @@ async function switchMode(next) {
     return
   }
   if (!cameraReady.value) await startCamera()
+}
+
+/** 页面隐藏（切标签 / 最小化）时暂停摄像头，回来后由用户点「开启摄像头」恢复 */
+function onVisibilityChange() {
+  if (document.hidden && cameraReady.value) {
+    stopStream()
+    status.value = captured.value ? 'previewing' : 'idle'
+  }
+}
+
+onMounted(() => document.addEventListener('visibilitychange', onVisibilityChange))
+
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (submitController) submitController.abort() // 提交中离开页面：中断请求，避免回写已卸载组件
+  stopStream()
+  releasePreview()
+})
+
+// 开发期热更新兜底：HMR 不走完整卸载语义，轨道会一直占用
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    stopStream()
+    releasePreview()
+  })
 }
 </script>
 
