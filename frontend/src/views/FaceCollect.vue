@@ -1,15 +1,24 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { MAX_NAME_LEN } from '../api/face'
+import { MAX_NAME_LEN, MAX_UPLOAD_BYTES, registerByFrame, registerByImage } from '../api/face'
 import { useCamera } from '../composables/useCamera'
+import { toUserMessage } from '../utils/errors'
+import { compressImage, validateImageFile } from '../utils/image'
 
 const mode = ref('upload') // upload | camera
 const realName = ref('')
 const composing = ref(false)
 const status = ref('idle') // idle | previewing | submitting | receipt | error
 const errorText = ref('')
+const errorCode = ref(0)
 const notice = ref('')
 const captured = ref(null) // 摄像头截帧 { dataUrl, width, height }
+const selectedFile = ref(null) // 压缩后的 File（上传给后端）
+const previewUrl = ref('')
+const receipt = ref(null)
+const uploadPercent = ref(0)
+const fileInput = ref(null)
+let submitController = null
 
 const camera = useCamera({ width: 640, height: 480 })
 const {
@@ -30,6 +39,25 @@ const cameraHint = computed(() => {
   if (cameraStatus.value === 'starting') return '正在开启摄像头…'
   if (cameraStatus.value === 'error') return '摄像头启动失败，请查看下方提示'
   return '摄像头未开启'
+})
+const hasImage = computed(() =>
+  mode.value === 'upload' ? !!selectedFile.value : !!captured.value,
+)
+const canSubmit = computed(
+  () =>
+    !submitting.value &&
+    nameLength.value >= 1 &&
+    !nameTooLong.value &&
+    hasImage.value,
+)
+const previewMeta = computed(() => {
+  if (mode.value === 'upload') {
+    if (!selectedFile.value) return ''
+    const kb = Math.max(1, Math.round(selectedFile.value.size / 1024))
+    return `${selectedFile.value.name} · ${kb} KB`
+  }
+  if (captured.value) return `已拍摄 ${captured.value.width}×${captured.value.height}`
+  return ''
 })
 
 /** 失焦 / IME 结束后去掉首尾空格；拼音输入过程中不打断候选词 */
@@ -61,6 +89,122 @@ function onDeviceChange(event) {
   if (deviceId) startCamera(deviceId)
 }
 
+/** 释放上一次预览的 Blob URL，避免反复选图内存上涨 */
+function releasePreview() {
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = ''
+}
+
+function pickFile() {
+  fileInput.value?.click()
+}
+
+async function onFileChange(event) {
+  const file = event.target.files && event.target.files[0]
+  event.target.value = '' // 允许再次选择同一个文件
+  if (!file) return
+  const invalid = validateImageFile(file, MAX_UPLOAD_BYTES)
+  if (invalid) {
+    errorText.value = invalid
+    errorCode.value = 0
+    status.value = 'error'
+    return
+  }
+  try {
+    selectedFile.value = await compressImage(file)
+  } catch (error) {
+    errorText.value = error.message || '图片处理失败，请重试'
+    errorCode.value = 0
+    status.value = 'error'
+    return
+  }
+  releasePreview()
+  previewUrl.value = URL.createObjectURL(selectedFile.value)
+  captured.value = null
+  receipt.value = null
+  errorText.value = ''
+  errorCode.value = 0
+  notice.value = ''
+  status.value = 'previewing'
+}
+
+function clearSelected() {
+  releasePreview()
+  selectedFile.value = null
+  notice.value = ''
+  if (mode.value === 'upload') status.value = 'idle'
+}
+
+/** 姓名与图片前置校验 → 调接口 → 回执 / 错误；提交中按钮禁用防重复入库 */
+async function submit() {
+  const name = realName.value.trim()
+  if (!name) {
+    errorText.value = '请输入姓名'
+    errorCode.value = 0
+    status.value = 'error'
+    return
+  }
+  if ([...name].length > MAX_NAME_LEN) {
+    errorText.value = `姓名最多 ${MAX_NAME_LEN} 个字符`
+    errorCode.value = 0
+    status.value = 'error'
+    return
+  }
+  if (mode.value === 'upload' && !selectedFile.value) {
+    errorText.value = '请先选择图片'
+    status.value = 'error'
+    return
+  }
+  if (mode.value === 'camera' && !captured.value) {
+    errorText.value = '请先拍照'
+    status.value = 'error'
+    return
+  }
+
+  if (submitController) submitController.abort() // 按钮已禁用，兜底
+  submitController = new AbortController()
+  status.value = 'submitting'
+  errorText.value = ''
+  errorCode.value = 0
+  notice.value = ''
+  receipt.value = null
+  uploadPercent.value = 0
+
+  try {
+    const options = { signal: submitController.signal }
+    const res =
+      mode.value === 'upload'
+        ? await registerByImage(selectedFile.value, name, {
+            ...options,
+            onUploadProgress: (event) => {
+              if (event.total) uploadPercent.value = Math.round((event.loaded / event.total) * 100)
+            },
+          })
+        : await registerByFrame(name, captured.value.dataUrl, options)
+
+    receipt.value = res.data
+    notice.value = res.data.face_count > 1
+      ? `入库成功：${res.data.name}（record_id=${res.data.record_id}，检测到 ${res.data.face_count} 张人脸）`
+      : `入库成功：${res.data.name}（record_id=${res.data.record_id}）`
+    status.value = 'receipt'
+    selectedFile.value = null // 必须重新选图才能再次提交，规避同名 1004
+    releasePreview()
+    captured.value = null
+    stopStream()
+  } catch (error) {
+    if (error.isCanceled) {
+      status.value = 'previewing'
+      return
+    }
+    errorText.value = toUserMessage(error) || '入库失败，请重试'
+    errorCode.value = error.code
+    status.value = 'error'
+  } finally {
+    submitController = null
+    uploadPercent.value = 0
+  }
+}
+
 /** 切换采集方式：另一模式的预览与提示必须一并失效 */
 async function switchMode(next) {
   if (submitting.value || next === mode.value) return
@@ -82,6 +226,15 @@ async function switchMode(next) {
   <section class="page">
     <h1 class="page__title">人脸采集</h1>
     <p class="page__subtitle">上传本地图片或摄像头拍照，填写姓名后写入特征库</p>
+
+    <input
+      id="image-file"
+      ref="fileInput"
+      class="collect-file"
+      type="file"
+      accept="image/jpeg,image/png,image/webp,image/bmp"
+      @change="onFileChange"
+    />
 
     <div class="collect-tabs" role="tablist" aria-label="采集方式">
       <button
@@ -122,7 +275,8 @@ async function switchMode(next) {
           role="tabpanel"
           aria-labelledby="tab-upload"
         >
-          <p class="collect-preview__empty">尚未选择图片</p>
+          <img v-if="previewUrl" class="collect-preview__media" :src="previewUrl" alt="已选图片预览" />
+          <p v-else class="collect-preview__empty">尚未选择图片</p>
         </div>
         <div
           v-show="mode === 'camera'"
@@ -170,7 +324,14 @@ async function switchMode(next) {
               </option>
             </select>
           </template>
+          <template v-else>
+            <button class="btn" type="button" :disabled="submitting" @click="pickFile">选择图片</button>
+            <button v-if="previewUrl" class="btn btn--ghost" type="button" :disabled="submitting" @click="clearSelected">
+              清除
+            </button>
+          </template>
         </div>
+        <p v-if="previewMeta" class="muted collect-meta">{{ previewMeta }}</p>
       </div>
 
       <div class="card">
@@ -195,6 +356,17 @@ async function switchMode(next) {
             <span v-if="nameTooLong">（超出上限，后端将返回 1001）</span>
           </p>
           <p class="muted">姓名为特征库唯一键，与其已有记录重名时会提示先删除旧记录。</p>
+        </div>
+
+        <div class="collect-submit">
+          <button class="btn" type="button" :disabled="!canSubmit" @click="submit">
+            {{ submitting ? '提交中…' : '确认入库' }}
+          </button>
+          <span v-if="submitting && mode === 'upload'" class="muted">上传中 {{ uploadPercent }}%</span>
+          <span v-else-if="!hasImage" class="muted">
+            {{ mode === 'upload' ? '请先选择图片' : '请先拍照' }}
+          </span>
+          <span v-else-if="!nameLength" class="muted">请输入姓名</span>
         </div>
       </div>
     </div>
@@ -276,6 +448,29 @@ async function switchMode(next) {
   align-items: center;
   gap: 8px;
   margin-top: 12px;
+}
+
+.collect-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.collect-meta {
+  margin-top: 8px;
+}
+
+.collect-submit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .collect-device {
