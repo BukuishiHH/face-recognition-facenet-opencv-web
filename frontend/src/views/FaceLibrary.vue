@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { getLibrary } from '../api/face'
 import { toUserMessage } from '../utils/errors'
 
@@ -10,6 +10,33 @@ const items = ref([]) // GET /api/face/library → data.items（逐条特征记�
 const loading = ref(false)
 const errorText = ref('')
 const loadedAt = ref('')
+
+/**
+ * 逐条记录 → 按人聚合（docs/04-05 4.2）
+ * 同一姓名的多条特征只出一行；维度用 Number 归一后 Set 去重，避免 512 与 "512" 并存
+ */
+const people = computed(() => {
+  const map = new Map()
+  items.value.forEach((rec) => {
+    const person = map.get(rec.name) || {
+      name: rec.name,
+      count: 0,
+      dims: new Set(),
+      latest: '',
+      ids: [],
+    }
+    person.count += 1
+    person.dims.add(Number(rec.feature_dim))
+    person.ids.push(rec.id)
+    // timestamp 形如 "2026-10-18 15:02:11"，同为 UTC 字符串，直接比较即可定位最新
+    const stamp = String(rec.timestamp || '')
+    if (stamp > person.latest) person.latest = stamp
+    map.set(rec.name, person)
+  })
+  return [...map.values()]
+    .map((person) => ({ ...person, dims: [...person.dims].sort((a, b) => a - b) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+})
 
 /**
  * 拉取特征库列表（docs/04-05 4.3）
@@ -44,7 +71,7 @@ onMounted(load)
         <h1 class="page__title">特征库管理</h1>
         <p class="page__subtitle">
           共 <strong id="library-total">{{ items.length }}</strong> 条特征 /
-          <strong id="library-people">{{ items.length }}</strong> 人
+          <strong id="library-people">{{ people.length }}</strong> 人
           <span v-if="loadedAt" id="library-loaded-at" class="library-head__time">更新于 {{ loadedAt }}</span>
         </p>
       </div>
@@ -64,14 +91,29 @@ onMounted(load)
       <p>特征库还是空的。</p>
     </div>
 
-    <ul v-else id="library-raw-list" class="library-raw">
-      <li v-for="rec in items" :key="rec.id">
-        <span class="mono">#{{ rec.id }}</span>
-        <strong>{{ rec.name }}</strong>
-        <span class="muted">{{ rec.feature_dim }} 维</span>
-        <span class="mono muted">{{ rec.timestamp }}</span>
-      </li>
-    </ul>
+    <div v-else class="card library-card">
+      <table id="library-people-table" class="table">
+        <caption class="sr-only">按人聚合的特征库列表</caption>
+        <thead>
+          <tr>
+            <th scope="col">姓名</th>
+            <th scope="col">特征条数</th>
+            <th scope="col">维度</th>
+            <th scope="col">最近录入 (UTC)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="person in people" :key="person.name">
+            <td>{{ person.name }}</td>
+            <td>{{ person.count }}</td>
+            <td>
+              <span class="badge">{{ person.dims.join(' / ') }}</span>
+            </td>
+            <td class="mono">{{ person.latest || '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <p class="library-note muted">特征维度应为 {{ EXPECTED_FEATURE_DIM }} 维。</p>
   </section>
@@ -92,27 +134,25 @@ onMounted(load)
   font-size: 12px;
 }
 
-.library-raw {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 12px 16px;
-  list-style: none;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  font-size: 13px;
-}
-
-.library-raw li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.library-card {
+  padding: 0;
+  overflow-x: auto;
 }
 
 .library-note {
   margin-top: 12px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .state {
