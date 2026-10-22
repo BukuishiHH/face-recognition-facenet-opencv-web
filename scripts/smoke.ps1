@@ -128,11 +128,16 @@ Check 'register 重复 code=1004' ($dup.Json.code -eq 1004) $dup.Text
 # 6) 图片识别（multipart：file / threshold / save_result）
 $rec = Invoke-Json 'POST' '/recognize/image' (New-Multipart @{ threshold = '0.6'; save_result = 'false' } 'file' $Sample)
 Check 'recognize/image code=0' ($rec.Json.code -eq 0) $rec.Text
-$hit = @($rec.Json.data.faces | Where-Object { $_.matched -and $_.name -eq $Name })
-Check 'recognize/image 命中本人' ($hit.Count -ge 1) $rec.Text
-if ($hit.Count -ge 1) {
-    Check 'similarity 落在 0~1' ($hit[0].similarity -ge 0 -and $hit[0].similarity -le 1) "similarity=$($hit[0].similarity)"
-    Check 'box 为 x/y/w/h' ($null -ne $hit[0].box.x -and $null -ne $hit[0].box.y -and $null -ne $hit[0].box.w -and $null -ne $hit[0].box.h) $rec.Text
+# 库里若已有「同一张脸」的其它记录（例如数据脚本的张三用的就是本样本），
+# 相似度同为 1.0，识别只返回 top-1，可能返回那条记录的名字 —— 不能用「名字必须等于 $Name」硬卡。
+$hit = @($rec.Json.data.faces | Where-Object { $_.matched })
+$self = @($hit | Where-Object { $_.name -eq $Name })
+$alias = @($hit | Where-Object { $_.similarity -ge 0.99 })
+Check 'recognize/image 命中本人（或库内同脸记录）' ($self.Count -ge 1 -or $alias.Count -ge 1) $rec.Text
+$top = if ($self.Count -ge 1) { $self[0] } elseif ($alias.Count -ge 1) { $alias[0] } else { $null }
+if ($null -ne $top) {
+    Check 'similarity 落在 0~1' ($top.similarity -ge 0 -and $top.similarity -le 1) "similarity=$($top.similarity)"
+    Check 'box 为 x/y/w/h' ($null -ne $top.box.x -and $null -ne $top.box.y -and $null -ne $top.box.w -and $null -ne $top.box.h) $rec.Text
 }
 
 
