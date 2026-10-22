@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { getLibrary } from '../api/face'
+import { deleteLibraryItem, getLibrary } from '../api/face'
 import { toUserMessage } from '../utils/errors'
 
 // 与 backend/facenet_encoder.py 的 EMBEDDING_DIM 一致；维度自检用（docs/04-05 4.2）
@@ -15,6 +15,9 @@ const view = ref('people') // people | items
 const pendingName = ref('') // 待删除姓名
 const pendingCount = ref(0) // 该姓名下的特征条数（写进确认文案）
 const dialogRef = ref(null)
+const deleting = ref(false) // DELETE 在途：防重复提交
+const notice = ref('') // 操作结果提示（成功 / 已被删除）
+const noticeKind = ref('alert--success') // alert--success | alert--warning
 
 /**
  * 逐条记录 → 按人聚合（docs/04-05 4.2）
@@ -53,8 +56,13 @@ const filteredItems = computed(() =>
 )
 const viewRows = computed(() => (view.value === 'people' ? filteredPeople.value : filteredItems.value))
 const filteredEmpty = computed(() => items.value.length > 0 && viewRows.value.length === 0)
-// 数据不可信（加载中 / 加载失败已清空）时禁止发起删除，避免对未知数据做破坏性操作
-const deleteBlocked = computed(() => loading.value || !!errorText.value)
+// 数据不可信（加载中 / 加载失败已清空 / 删除在途）时禁止发起删除
+const deleteBlocked = computed(() => loading.value || !!errorText.value || deleting.value)
+
+function setNotice(text, kind = 'success') {
+  notice.value = text
+  noticeKind.value = kind === 'warning' ? 'alert--warning' : 'alert--success'
+}
 
 /** 打开确认框：只填状态与弹窗，真正的删除在用户确认后进行（docs/04-05 4.4） */
 function askDelete(person) {
@@ -79,8 +87,36 @@ function cancelDelete() {
 }
 
 async function confirmDelete() {
-  // M4-5.5 接入 DELETE 请求与刷新；本里程碑先关闭弹窗
-  closeDialog()
+  if (!pendingName.value || deleting.value) return
+  // 先快照：请求在途时用户可能按 ESC 关闭对话框，复位 pendingName 不应影响本次操作
+  const target = pendingName.value
+  const expected = pendingCount.value
+  deleting.value = true
+  notice.value = ''
+  errorText.value = ''
+  try {
+    const res = await deleteLibraryItem(target) // DELETE /face/library?name=（params 自动编码）
+    closeDialog()
+    const removed = Number(res.data?.deleted ?? expected) || expected
+    setNotice(`已删除「${target}」的 ${removed} 条特征`)
+    await load() // 以后端为准刷新（删除瞬间可能有并发采集）
+  } catch (err) {
+    if (err.isCanceled) return
+    if (err.code === 1005) {
+      // 已被别处删除：用户意图已达成，不报红，刷新即可
+      closeDialog()
+      setNotice('该用户已不存在，列表已刷新', 'warning')
+      await load()
+    } else if (err.code === 1001) {
+      // 参数不合法：保留对话框让用户取消或重试，不刷新（刷新也没用）
+      setNotice('姓名参数不合法，请刷新后重试', 'warning')
+    } else {
+      // 失败不关窗：保留上下文；errorText 会同时禁用其它删除按钮
+      errorText.value = toUserMessage(err)
+    }
+  } finally {
+    deleting.value = false
+  }
 }
 
 /**
@@ -124,6 +160,10 @@ onMounted(load)
         {{ loading ? '加载中…' : '刷新' }}
       </button>
     </header>
+
+    <div v-if="notice" id="library-notice" class="alert library-notice" :class="noticeKind" role="status">
+      {{ notice }}
+    </div>
 
     <div v-if="errorText" id="library-error" class="state state--error" role="alert">
       <p>{{ errorText }}</p>
@@ -237,8 +277,16 @@ onMounted(load)
           将删除「{{ pendingName }}」的 {{ pendingCount }} 条特征，此操作不可撤销。
         </p>
         <menu class="library-dialog__actions">
-          <button class="btn btn--ghost" type="button" @click="cancelDelete">取消</button>
-          <button class="btn btn--danger" type="button" @click="confirmDelete">删除</button>
+          <button class="btn btn--ghost" type="button" :disabled="deleting" @click="cancelDelete">取消</button>
+          <button
+            id="library-dialog-confirm"
+            class="btn btn--danger"
+            type="button"
+            :disabled="deleting"
+            @click="confirmDelete"
+          >
+            {{ deleting ? '删除中…' : '删除' }}
+          </button>
         </menu>
       </form>
     </dialog>
@@ -323,6 +371,11 @@ onMounted(load)
   font-size: 13px;
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* ------------------------------- 操作结果提示 ------------------------------- */
+.library-notice {
+  margin: 0 0 12px;
 }
 
 /* ------------------------------- 删除确认框 ------------------------------- */
