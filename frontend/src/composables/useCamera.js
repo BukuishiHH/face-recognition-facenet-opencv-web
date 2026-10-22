@@ -32,7 +32,11 @@ export function useCamera({ width = 640, height = 480, facingMode = 'user' } = {
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       status.value = 'error'
-      errorText.value = '当前浏览器不支持摄像头采集，请使用 Chrome / Edge 最新版'
+      // 局域网 IP 是非 secure context，Chrome 会直接隐藏 mediaDevices，容易误判为「浏览器不支持」
+      errorText.value =
+        window.isSecureContext === false
+          ? '当前地址不是安全上下文，请用 localhost 或 HTTPS 访问'
+          : '当前浏览器不支持摄像头采集，请使用 Chrome / Edge 最新版'
       return false
     }
 
