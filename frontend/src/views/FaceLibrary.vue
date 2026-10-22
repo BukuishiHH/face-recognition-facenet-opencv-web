@@ -10,6 +10,8 @@ const items = ref([]) // GET /api/face/library → data.items（逐条特征记�
 const loading = ref(false)
 const errorText = ref('')
 const loadedAt = ref('')
+const keyword = ref('')
+const view = ref('people') // people | items
 
 /**
  * 逐条记录 → 按人聚合（docs/04-05 4.2）
@@ -37,6 +39,17 @@ const people = computed(() => {
     .map((person) => ({ ...person, dims: [...person.dims].sort((a, b) => a - b) }))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 })
+
+// 搜索是纯前端过滤：不 watch keyword，也不因此发请求（docs/04-05 4.3 注）
+const kw = computed(() => keyword.value.trim().toLowerCase())
+const filteredPeople = computed(() =>
+  kw.value ? people.value.filter((p) => p.name.toLowerCase().includes(kw.value)) : people.value,
+)
+const filteredItems = computed(() =>
+  kw.value ? items.value.filter((r) => String(r.name).toLowerCase().includes(kw.value)) : items.value,
+)
+const viewRows = computed(() => (view.value === 'people' ? filteredPeople.value : filteredItems.value))
+const filteredEmpty = computed(() => items.value.length > 0 && viewRows.value.length === 0)
 
 /**
  * 拉取特征库列表（docs/04-05 4.3）
@@ -91,29 +104,85 @@ onMounted(load)
       <p>特征库还是空的。</p>
     </div>
 
-    <div v-else class="card library-card">
-      <table id="library-people-table" class="table">
-        <caption class="sr-only">按人聚合的特征库列表</caption>
-        <thead>
-          <tr>
-            <th scope="col">姓名</th>
-            <th scope="col">特征条数</th>
-            <th scope="col">维度</th>
-            <th scope="col">最近录入 (UTC)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="person in people" :key="person.name">
-            <td>{{ person.name }}</td>
-            <td>{{ person.count }}</td>
-            <td>
-              <span class="badge">{{ person.dims.join(' / ') }}</span>
-            </td>
-            <td class="mono">{{ person.latest || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <template v-else>
+      <section class="toolbar">
+        <div class="segmented" role="group" aria-label="视图切换">
+          <button
+            id="library-view-people"
+            type="button"
+            class="segmented__btn"
+            :class="{ 'is-active': view === 'people' }"
+            :aria-pressed="view === 'people'"
+            @click="view = 'people'"
+          >
+            按人
+          </button>
+          <button
+            id="library-view-items"
+            type="button"
+            class="segmented__btn"
+            :class="{ 'is-active': view === 'items' }"
+            :aria-pressed="view === 'items'"
+            @click="view = 'items'"
+          >
+            明细
+          </button>
+        </div>
+        <label class="search">
+          <span class="sr-only">按姓名筛选</span>
+          <input id="library-search" v-model="keyword" class="input" type="search" placeholder="按姓名筛选" />
+        </label>
+      </section>
+
+      <div v-if="filteredEmpty" id="library-no-match" class="state">
+        <p>没有匹配「{{ keyword.trim() }}」的用户。</p>
+        <button class="link-btn" type="button" @click="keyword = ''">清空搜索</button>
+      </div>
+
+      <div v-else class="card library-card">
+        <table v-if="view === 'people'" id="library-people-table" class="table">
+          <caption class="sr-only">按人聚合的特征库列表</caption>
+          <thead>
+            <tr>
+              <th scope="col">姓名</th>
+              <th scope="col">特征条数</th>
+              <th scope="col">维度</th>
+              <th scope="col">最近录入 (UTC)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="person in filteredPeople" :key="person.name">
+              <td>{{ person.name }}</td>
+              <td>{{ person.count }}</td>
+              <td>
+                <span class="badge">{{ person.dims.join(' / ') }}</span>
+              </td>
+              <td class="mono">{{ person.latest || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table v-else id="library-items-table" class="table">
+          <caption class="sr-only">特征记录明细</caption>
+          <thead>
+            <tr>
+              <th scope="col">ID</th>
+              <th scope="col">姓名</th>
+              <th scope="col">维度</th>
+              <th scope="col">录入时间 (UTC)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rec in filteredItems" :key="rec.id">
+              <td class="mono">{{ rec.id }}</td>
+              <td>{{ rec.name }}</td>
+              <td>{{ rec.feature_dim }}</td>
+              <td class="mono">{{ rec.timestamp }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
 
     <p class="library-note muted">特征维度应为 {{ EXPECTED_FEATURE_DIM }} 维。</p>
   </section>
@@ -137,6 +206,66 @@ onMounted(load)
 .library-card {
   padding: 0;
   overflow-x: auto;
+}
+
+/* ------------------------------- 工具栏 ------------------------------- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.segmented__btn {
+  min-height: 30px;
+  padding: 4px 16px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.segmented__btn:hover {
+  color: var(--color-text);
+}
+
+.segmented__btn.is-active {
+  background: #eef4ff;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.search .input {
+  width: 220px;
+}
+
+.search .input:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.25);
+}
+
+.link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .library-note {
