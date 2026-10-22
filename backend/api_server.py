@@ -253,10 +253,16 @@ def _register_from_bgr(image, name):
     """
     detector = app.state.detector
 
+    # 与识别链路保持一致: 长边先缩到 MAX_FRAME_SIDE 再检测.
+    # Haar 级联对分辨率敏感(实测 1080x1440 原图检不出、缩到 1280 长边可检出),
+    # 若采集不做缩放, 会出现「同一张图识别成功、采集却 1002」的割裂.
+    img, scale = limit_max_side(image)
+
     detect_started = time.perf_counter()
-    faces = detector.detect_faces(image)
+    faces = detector.detect_faces(img)
     detect_ms = (time.perf_counter() - detect_started) * 1000
-    logger.info('人脸检测: name=%s, 数量=%d, 耗时=%.1fms', name, len(faces), detect_ms)
+    logger.info('人脸检测: name=%s, 数量=%d, 缩放=%.4f, 耗时=%.1fms',
+                name, len(faces), scale, detect_ms)
 
     if not faces:
         return 1002, ERR_NO_FACE, None
@@ -264,7 +270,7 @@ def _register_from_bgr(image, name):
     # 多脸取面积最大的一张; 面积并列时 max 返回检测顺序第一个, 结果确定可测
     x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
     logger.info('选脸完成: name=%s, 选中=%s, 总面积=%d', name, (x, y, w, h), w * h)
-    roi = FaceDetection.crop_face_rois(image, [(x, y, w, h)])[0][0]
+    roi = FaceDetection.crop_face_rois(img, [(x, y, w, h)])[0][0]
 
     feature_started = time.perf_counter()
     feature = FaceRecognition.extract_feature(roi)
@@ -288,11 +294,17 @@ def _register_from_bgr(image, name):
         return 1003, ERR_FEATURE, None
 
     logger.info('特征入库成功: name=%s, record_id=%d', name, record_id)
+    # 返回的 selected 必须换算回原图坐标, 前端直接按原图尺寸画框
+    inv = 1.0 / scale
+    selected = FaceBox(
+        x=int(round(x * inv)), y=int(round(y * inv)),
+        w=int(round(w * inv)), h=int(round(h * inv)),
+    )
     data = RegisterData(
         record_id=record_id,
         name=name,
         face_count=len(faces),
-        selected=FaceBox(x=x, y=y, w=w, h=h),
+        selected=selected,
         feature_dim=feature.shape[1],
     )
     message = '人脸录入成功'
