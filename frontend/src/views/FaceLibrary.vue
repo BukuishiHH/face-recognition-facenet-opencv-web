@@ -12,6 +12,9 @@ const errorText = ref('')
 const loadedAt = ref('')
 const keyword = ref('')
 const view = ref('people') // people | items
+const pendingName = ref('') // 待删除姓名
+const pendingCount = ref(0) // 该姓名下的特征条数（写进确认文案）
+const dialogRef = ref(null)
 
 /**
  * 逐条记录 → 按人聚合（docs/04-05 4.2）
@@ -50,6 +53,35 @@ const filteredItems = computed(() =>
 )
 const viewRows = computed(() => (view.value === 'people' ? filteredPeople.value : filteredItems.value))
 const filteredEmpty = computed(() => items.value.length > 0 && viewRows.value.length === 0)
+// 数据不可信（加载中 / 加载失败已清空）时禁止发起删除，避免对未知数据做破坏性操作
+const deleteBlocked = computed(() => loading.value || !!errorText.value)
+
+/** 打开确认框：只填状态与弹窗，真正的删除在用户确认后进行（docs/04-05 4.4） */
+function askDelete(person) {
+  if (deleteBlocked.value) return
+  pendingName.value = person.name
+  pendingCount.value = person.count
+  dialogRef.value?.showModal() // 原生模态：焦点陷阱 + ESC + ::backdrop
+}
+
+function resetPending() {
+  pendingName.value = ''
+  pendingCount.value = 0
+}
+
+function closeDialog() {
+  dialogRef.value?.close()
+  resetPending()
+}
+
+function cancelDelete() {
+  closeDialog()
+}
+
+async function confirmDelete() {
+  // M4-5.5 接入 DELETE 请求与刷新；本里程碑先关闭弹窗
+  closeDialog()
+}
 
 /**
  * 拉取特征库列表（docs/04-05 4.3）
@@ -148,6 +180,7 @@ onMounted(load)
               <th scope="col">特征条数</th>
               <th scope="col">维度</th>
               <th scope="col">最近录入 (UTC)</th>
+              <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -158,6 +191,17 @@ onMounted(load)
                 <span class="badge">{{ person.dims.join(' / ') }}</span>
               </td>
               <td class="mono">{{ person.latest || '—' }}</td>
+              <td>
+                <button
+                  class="btn btn--danger btn--sm"
+                  type="button"
+                  :aria-label="`删除 ${person.name}`"
+                  :disabled="deleteBlocked"
+                  @click="askDelete(person)"
+                >
+                  删除
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -185,6 +229,19 @@ onMounted(load)
     </template>
 
     <p class="library-note muted">特征维度应为 {{ EXPECTED_FEATURE_DIM }} 维。</p>
+
+    <dialog ref="dialogRef" id="library-dialog" class="library-dialog" aria-labelledby="library-dialog-title" @close="resetPending">
+      <form method="dialog" @submit.prevent>
+        <h2 id="library-dialog-title" class="library-dialog__title">删除确认</h2>
+        <p id="library-dialog-text" class="library-dialog__text">
+          将删除「{{ pendingName }}」的 {{ pendingCount }} 条特征，此操作不可撤销。
+        </p>
+        <menu class="library-dialog__actions">
+          <button class="btn btn--ghost" type="button" @click="cancelDelete">取消</button>
+          <button class="btn btn--danger" type="button" @click="confirmDelete">删除</button>
+        </menu>
+      </form>
+    </dialog>
   </section>
 </template>
 
@@ -266,6 +323,39 @@ onMounted(load)
   font-size: 13px;
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* ------------------------------- 删除确认框 ------------------------------- */
+.library-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.25);
+  color: var(--color-text);
+}
+
+.library-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.library-dialog__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.library-dialog__text {
+  margin: 0;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.library-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 20px 0 0;
+  padding: 0;
 }
 
 .library-note {
