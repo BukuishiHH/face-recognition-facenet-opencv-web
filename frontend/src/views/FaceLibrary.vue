@@ -412,8 +412,9 @@ onMounted(load)
 }
 
 .badge--warn {
+  /* #b45309（amber-700）在 #fffbeb 上对比度 4.84:1；直接用 --color-warning(#d97706) 只有 3.07:1（docs/04-05 4.9 要求 ≥4.5） */
   background: #fffbeb;
-  color: var(--color-warning);
+  color: #b45309;
 }
 
 /* ------------------------------- 操作结果提示 ------------------------------- */
