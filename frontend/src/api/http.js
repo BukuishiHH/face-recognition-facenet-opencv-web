@@ -74,6 +74,14 @@ http.interceptors.response.use(
     if (error.code === 'ECONNABORTED') {
       return Promise.reject(new ApiError(-2, '请求超时：后端推理耗时较长或服务未响应', 0))
     }
+    // 非信封响应（如未匹配路由的 404 Not Found、网关的 502）：按 HTTP 状态兜底，
+    // 避免把「接口路径写错」误报成「无法连接后端服务」（docs/04-06 §4.4 #11）
+    if (error.response) {
+      const { status } = error.response
+      return Promise.reject(
+        new ApiError(status, `接口响应异常：HTTP ${status}，请检查请求路径与参数`, status),
+      )
+    }
     return Promise.reject(
       new ApiError(-1, '无法连接后端服务，请确认 uvicorn 已在 8000 端口启动', 0),
     )
