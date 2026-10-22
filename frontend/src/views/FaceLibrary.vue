@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { deleteLibraryItem, getLibrary } from '../api/face'
 import { toUserMessage } from '../utils/errors'
 
@@ -62,6 +63,32 @@ const deleteBlocked = computed(() => loading.value || !!errorText.value || delet
 function setNotice(text, kind = 'success') {
   notice.value = text
   noticeKind.value = kind === 'warning' ? 'alert--warning' : 'alert--success'
+}
+
+/**
+ * 维度自检（docs/04-05 4.6）
+ * 老库可能混入换模型前的特征（如 128 维），这些人员「永远匹配不上」且用户无从得知，
+ * 所以只要有一条非 512 维就在顶部提示；但**不阻塞操作**，用户仍可删除。
+ */
+const badDimRecords = computed(() =>
+  items.value.filter((rec) => Number(rec.feature_dim) !== EXPECTED_FEATURE_DIM),
+)
+const dimWarning = computed(() => {
+  const bad = badDimRecords.value
+  if (!bad.length) return ''
+  const dims = [...new Set(bad.map((rec) => Number(rec.feature_dim)))].sort((a, b) => a - b)
+  const names = [...new Set(bad.map((rec) => String(rec.name)))]
+  const shown = names.slice(0, 3).join('、') + (names.length > 3 ? ` 等 ${names.length} 人` : '')
+  return (
+    `检测到 ${bad.length} 条非 ${EXPECTED_FEATURE_DIM} 维特征` +
+    `（${dims.join(' / ')} 维，涉及 ${names.length} 人：${shown}），` +
+    '这些人员可能无法被识别，建议删除后重新采集。'
+  )
+})
+
+/** 该人是否含非标准维度（用于标签变色，文字本身不变） */
+function hasBadDim(person) {
+  return person.dims.some((dim) => dim !== EXPECTED_FEATURE_DIM)
 }
 
 /** 打开确认框：只填状态与弹窗，真正的删除在用户确认后进行（docs/04-05 4.4） */
@@ -165,6 +192,10 @@ onMounted(load)
       {{ notice }}
     </div>
 
+    <p v-if="dimWarning" id="library-dim-warning" class="alert alert--warning library-dim-warning">
+      ⚠ {{ dimWarning }}
+    </p>
+
     <div v-if="errorText" id="library-error" class="state state--error" role="alert">
       <p>{{ errorText }}</p>
       <button class="btn" type="button" @click="load()">重试</button>
@@ -174,6 +205,7 @@ onMounted(load)
 
     <div v-else-if="!items.length" id="library-empty" class="state state--empty">
       <p>特征库还是空的。</p>
+      <RouterLink id="library-empty-link" class="btn btn--primary" to="/collect">去录入第一张人脸</RouterLink>
     </div>
 
     <template v-else>
@@ -228,7 +260,7 @@ onMounted(load)
               <td>{{ person.name }}</td>
               <td>{{ person.count }}</td>
               <td>
-                <span class="badge">{{ person.dims.join(' / ') }}</span>
+                <span class="badge" :class="{ 'badge--warn': hasBadDim(person) }">{{ person.dims.join(' / ') }}</span>
               </td>
               <td class="mono">{{ person.latest || '—' }}</td>
               <td>
@@ -371,6 +403,17 @@ onMounted(load)
   font-size: 13px;
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* ------------------------------- 维度告警 ------------------------------- */
+.library-dim-warning {
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.badge--warn {
+  background: #fffbeb;
+  color: var(--color-warning);
 }
 
 /* ------------------------------- 操作结果提示 ------------------------------- */
